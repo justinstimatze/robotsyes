@@ -23,6 +23,32 @@ type Config struct {
 	// RateLimits maps an identity tier name (see internal/identity) to
 	// its published requests-per-minute ceiling.
 	RateLimits map[string]int `yaml:"rate_limits"`
+	// Payments configures pillar 4's optional paid-overflow tier: past
+	// RateLimits' ceiling, a requester can settle a payment instead of
+	// drawing a flat 429. Off by default.
+	Payments PaymentsConfig `yaml:"payments"`
+}
+
+// PaymentsConfig configures the optional x402 paid-overflow path (see
+// internal/paymentgate/chitgate). Enabled must be explicitly true —
+// there is no flag or auto-detect that turns this on by inference, since
+// once on it moves real money.
+type PaymentsConfig struct {
+	// Enabled turns on the paid-overflow path. Hard default false.
+	Enabled bool `yaml:"enabled"`
+	// PayoutAddress is the bare 0x EVM address payments settle to.
+	// Required when Enabled.
+	PayoutAddress string `yaml:"payout_address"`
+	// PriceCentsPerRequest is the flat US-cent price for one
+	// over-ceiling request. Required (and must be positive) when
+	// Enabled.
+	PriceCentsPerRequest int64 `yaml:"price_cents_per_request"`
+	// Network is the x402 CAIP-2 network id advertised in challenges.
+	// Defaults to Base mainnet ("eip155:8453") if unset.
+	Network string `yaml:"network"`
+	// Asset is the ERC-20 contract address payment is accepted in.
+	// Defaults to USDC on Base if unset.
+	Asset string `yaml:"asset"`
 }
 
 // ExportConfig configures pillar 2: bulk/structured export.

@@ -16,6 +16,8 @@ import (
 
 	"github.com/justinstimatze/robotsyes/internal/config"
 	"github.com/justinstimatze/robotsyes/internal/identity"
+	"github.com/justinstimatze/robotsyes/internal/paymentgate/chitgate"
+	"github.com/justinstimatze/robotsyes/internal/payments"
 	"github.com/justinstimatze/robotsyes/internal/proxy"
 )
 
@@ -99,13 +101,58 @@ func cmdServe(args []string) {
 
 	cards := identity.NewCardFetcher(5*time.Minute, identity.DefaultMaxCardCacheEntries)
 	verifier := identity.NewSignedVerifier(cards)
-	srv, err := proxy.New(cfg, verifier)
+
+	var merchant payments.Merchant
+	if cfg.Payments.Enabled {
+		// Resolve Network/Asset here, once, so both the merchant and the
+		// discovery document (which reads cfg.Payments back out of the
+		// Server) agree on the effective values instead of the
+		// discovery doc publishing an empty string when the operator
+		// relied on chitgate's built-in default.
+		if cfg.Payments.Network == "" {
+			cfg.Payments.Network = chitgate.DefaultNetwork
+		}
+		if cfg.Payments.Asset == "" {
+			cfg.Payments.Asset = chitgate.DefaultAsset
+		}
+		m, err := chitgate.New(chitgate.Config{
+			PayoutAddress:        cfg.Payments.PayoutAddress,
+			PriceCentsPerRequest: cfg.Payments.PriceCentsPerRequest,
+			Network:              cfg.Payments.Network,
+			Asset:                cfg.Payments.Asset,
+		})
+		if err != nil {
+			log.Fatalf("robotsyes: %v", err)
+		}
+		merchant = m
+	}
+
+	srv, err := proxy.New(cfg, verifier, merchant)
 	if err != nil {
 		log.Fatalf("robotsyes: %v", err)
 	}
 
 	log.Printf("robotsyes %s: listening on %s, proxying %s", buildVersion(), cfg.Addr, cfg.Origin)
-	if err := http.ListenAndServe(cfg.Addr, srv); err != nil {
+	// A bare http.ListenAndServe has no read/write/idle timeouts at all —
+	// a client that opens a connection and never finishes sending, or
+	// never reads the response, can hold it open indefinitely. That
+	// matters more now than it used to: the paid-overflow path (see
+	// proxy.handleRateLimited) can make a real outbound call to a
+	// third-party settlement endpoint, and without a bound here a slow
+	// client sitting on that request ties up the goroutine for as long
+	// as the client is willing to wait. WriteTimeout is set comfortably
+	// above proxy.paymentRequestTimeout so that timeout's own clean 429
+	// has time to be written before this blunter one would abort the
+	// connection.
+	httpServer := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           srv,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatalf("robotsyes: %v", err)
 	}
 }

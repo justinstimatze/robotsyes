@@ -38,8 +38,9 @@ published rate limit instead of making a bot find the ceiling by tripping a 403.
 4. **Graduated, published rate limits** — "the stronger the provided identification, the
    higher the provided limit" (Wikimedia's own March 2026 framing), so a well-behaved bot
    knows its ceiling in advance instead of discovering it via 403s. Cloudflare's
-   "pay-per-crawl" (HTTP 402 + signed identity, 2025) is the metered/priced version of the
-   same idea.
+   "pay-per-crawl" (HTTP 402 + signed identity, 2025) was the metered/priced version of the
+   same idea; as of July 2026 it's been superseded by something with materially different
+   scope — see Confidence notes.
 
 ## Naming and domains
 
@@ -152,6 +153,25 @@ one deliberate design principle."
   `Signature-Agent` header) with an incompatible custom wire format; that gap is now closed
   (see CHANGELOG.md's "Unreleased" entry) — pillar 3 is wire-compatible with the real,
   already-deployed scheme, not just conceptually similar to it.
+- **Pillar 4's own prior art moved.** Fetched directly, 2026-08-28: Cloudflare's July 1, 2026
+  blog post ("Announcing the Monetization Gateway") states Pay Per Crawl is being generalized
+  into the Monetization Gateway, settling in stablecoins over **x402** — an open,
+  transport-agnostic payment protocol (HTTP 402 + `PAYMENT-REQUIRED`/`PAYMENT-SIGNATURE`/
+  `PAYMENT-RESPONSE` headers carrying base64-encoded JSON; EIP-3009 `transferWithAuthorization`
+  signed authorizations for the EVM "exact" scheme; a third-party or self-hosted
+  "facilitator" service performs `/verify` and `/settle` against the chain) that the Linux
+  Foundation formalized on April 2, 2026 with Coinbase, Cloudflare, and 25+ others as backers.
+  Primary sources: `github.com/coinbase/x402` (`specs/x402-specification-v2.md`,
+  `specs/transports-v2/http.md`) and the Cloudflare blog post above.
+
+  This is real and dated, but it's not the same kind of gap pillar 3's was. Web Bot Auth was
+  a pure signature check with no external dependency — matched this project's whole
+  two-dependency footprint. x402 needs a funded wallet and a facilitator that actually talks
+  to a blockchain: financial infrastructure, not a header parser. It's also a different
+  *mechanism* from pillar 4's current framing, not a more-mature version of the same one —
+  Wikimedia's model is "stronger identity earns a higher free tier"; x402's is "pay per
+  request, no free tier implied." Noting this here as a grounded, verified SOTA fact for
+  whenever the project decides whether to chase it, not as a decision already made.
 
 ## Open questions for prototyping
 

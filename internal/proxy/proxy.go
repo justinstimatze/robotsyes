@@ -5,6 +5,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/justinstimatze/robotsyes/internal/export"
 	"github.com/justinstimatze/robotsyes/internal/identity"
 	"github.com/justinstimatze/robotsyes/internal/negotiate"
+	"github.com/justinstimatze/robotsyes/internal/payments"
 	"github.com/justinstimatze/robotsyes/internal/ratelimit"
 )
 
@@ -25,6 +27,18 @@ const (
 	discoveryPath = "/.well-known/robots-yes.json"
 	exportPath    = "/.well-known/robots-yes/export.ndjson"
 	llmsTxtPath   = "/llms.txt"
+
+	// paymentRequestTimeout bounds a Merchant.RequirePayment call. A
+	// real settle call is a network round trip to a third-party
+	// authorization server (see internal/paymentgate/chitgate's package
+	// doc); without a bound here, a slow or unresponsive one would hold
+	// the request open for as long as the Merchant implementation's own
+	// client timeout allows (chit's own default is 65s). This is
+	// deliberately tighter than that default and than the server's own
+	// WriteTimeout (see cmd/robotsyes/main.go), so a timeout here
+	// produces this package's own clean 429 rather than the server
+	// aborting the connection uncleanly.
+	paymentRequestTimeout = 15 * time.Second
 )
 
 // Server is the assembled robots.yes proxy.
@@ -36,13 +50,17 @@ type Server struct {
 	upstream *httputil.ReverseProxy
 	client   *http.Client
 	metrics  *serverMetrics
+	payments payments.Merchant
 }
 
 // New assembles a Server from a Config. verifier chooses which
 // identity.Verifier grants tiers; pass identity.NoopVerifier{} to disable
 // pillar 3 entirely, or identity.DeclaredVerifier{} for the unsigned
-// self-declaration tier documented in internal/identity.
-func New(cfg config.Config, verifier identity.Verifier) (*Server, error) {
+// self-declaration tier documented in internal/identity. merchant enables
+// pillar 4's paid-overflow path (see handleRateLimited); pass nil to
+// disable it — a rate-limit denial then behaves exactly as it always
+// has, a flat 429.
+func New(cfg config.Config, verifier identity.Verifier, merchant payments.Merchant) (*Server, error) {
 	target, err := url.Parse(cfg.Origin)
 	if err != nil {
 		return nil, err
@@ -66,6 +84,7 @@ func New(cfg config.Config, verifier identity.Verifier) (*Server, error) {
 		upstream: httputil.NewSingleHostReverseProxy(target),
 		client:   &http.Client{Timeout: 10 * time.Second},
 		metrics:  newServerMetrics(),
+		payments: merchant,
 	}, nil
 }
 
@@ -77,11 +96,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	id := s.verifier.Verify(r)
 	s.metrics.recordRequest(id.Tier)
-	tier := string(id.Tier)
-	if !s.limiter.Allow(tier, clientKey(r, id)) {
-		s.metrics.recordDenied(id.Tier)
-		s.writeRateLimited(w, tier)
-		return
+	if !s.limiter.Allow(string(id.Tier), clientKey(r, id)) {
+		if !s.handleRateLimited(w, r, id.Tier) {
+			return
+		}
+		// Paid: fall through and serve this one request, bypassing the
+		// token bucket entirely — a settled payment is its own grant,
+		// not a bucket refill.
 	}
 
 	switch r.URL.Path {
@@ -144,6 +165,56 @@ func clientKey(r *http.Request, id identity.Identity) string {
 	return host
 }
 
+// handleRateLimited responds to a request the rate limiter denied. With
+// no payment merchant configured (s.payments == nil), this is
+// byte-for-byte the same 429 this project has always returned. When one
+// is configured: a request with no payment credential gets a 402
+// challenge instead of the flat 429; a request presenting a credential
+// that settles is let through this one time (paid == true) — ServeHTTP
+// then serves it without re-checking the limiter. Any infrastructure
+// error, or a Merchant returning neither a settlement nor a challenge,
+// fails closed to the existing 429 rather than surface an internal error
+// or let the request through unpaid.
+func (s *Server) handleRateLimited(w http.ResponseWriter, r *http.Request, tier identity.Tier) (paid bool) {
+	if s.payments == nil {
+		s.metrics.recordDenied(tier)
+		s.writeRateLimited(w, string(tier))
+		return false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), paymentRequestTimeout)
+	defer cancel()
+	settlement, challenge, err := s.payments.RequirePayment(ctx, payments.PaymentRequest{
+		Resource:   r.URL.Path,
+		Credential: paymentCredential(r.Header),
+	})
+	if err != nil || (settlement == nil && challenge == nil) {
+		s.metrics.recordDenied(tier)
+		s.writeRateLimited(w, string(tier))
+		return false
+	}
+	if challenge != nil {
+		s.metrics.recordPaymentChallenged()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(challenge.StatusCode)
+		_ = json.NewEncoder(w).Encode(challenge.Body)
+		return false
+	}
+	s.metrics.recordPaymentSettled()
+	return true
+}
+
+// paymentCredential extracts a settle credential from the request's
+// payment header, checking the same precedence chit's own
+// DetectProtocol uses for x402: Payment-Signature (the current wire
+// name) first, falling back to X-Payment (the legacy name real clients
+// still send) — no new parsing convention invented here.
+func paymentCredential(h http.Header) string {
+	if v := h.Get("Payment-Signature"); v != "" {
+		return v
+	}
+	return h.Get("X-Payment")
+}
+
 func (s *Server) writeRateLimited(w http.ResponseWriter, tier string) {
 	w.Header().Set("Retry-After", "60")
 	w.Header().Set("Content-Type", "application/json")
@@ -192,6 +263,7 @@ type discovery struct {
 	Export             discoveryExport            `json:"export"`
 	Identity           discoveryIdentity          `json:"identity"`
 	RateLimits         map[string]ratelimit.Limit `json:"rate_limits"`
+	Payments           discoveryPayments          `json:"payments"`
 }
 
 type discoveryNegotiation struct {
@@ -226,6 +298,38 @@ type discoveryIdentity struct {
 	// implementer who wants the authoritative definition rather than
 	// this document's summary of it.
 	Spec string `json:"spec,omitempty"`
+}
+
+// discoveryPayments describes pillar 4's optional paid-overflow path —
+// so a well-behaved bot learns the price past its free ceiling the same
+// way it already learns the ceiling itself, instead of discovering it by
+// tripping a 402.
+type discoveryPayments struct {
+	Supported            bool   `json:"supported"`
+	Network              string `json:"network,omitempty"`
+	Asset                string `json:"asset,omitempty"`
+	PriceCentsPerRequest int64  `json:"price_cents_per_request,omitempty"`
+	// Header names the header a paying retry should carry its settle
+	// credential in. Payment-Signature and X-Payment (see
+	// paymentCredential) are both accepted; this names the current one.
+	Header string `json:"header,omitempty"`
+}
+
+// paymentsCapabilities reports what the discovery document publishes for
+// pillar 4's paid-overflow path — populated only when a merchant is
+// actually configured, so the document never advertises a price the
+// running server can't collect.
+func (s *Server) paymentsCapabilities() discoveryPayments {
+	if s.payments == nil {
+		return discoveryPayments{Supported: false}
+	}
+	return discoveryPayments{
+		Supported:            true,
+		Network:              s.cfg.Payments.Network,
+		Asset:                s.cfg.Payments.Asset,
+		PriceCentsPerRequest: s.cfg.Payments.PriceCentsPerRequest,
+		Header:               "Payment-Signature",
+	}
 }
 
 // tierNames renders tiers as the strings the discovery document publishes,
@@ -295,6 +399,7 @@ func (s *Server) serveDiscovery(w http.ResponseWriter, r *http.Request) {
 		},
 		Identity:   s.identityCapabilities(),
 		RateLimits: s.limiter.Published(),
+		Payments:   s.paymentsCapabilities(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(doc)

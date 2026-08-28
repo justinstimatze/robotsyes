@@ -2,6 +2,109 @@
 
 ## Unreleased
 
+- Pillar 4 gained an optional paid-overflow tier: past a rate-limit
+  tier's published ceiling, an operator can let a requester pay per
+  over-ceiling request via **x402** (HTTP 402 + EIP-3009
+  `transferWithAuthorization` for the EVM "exact" scheme) instead of
+  always returning a flat 429 — the same protocol Cloudflare's
+  Monetization Gateway now runs (see HANDOFF.md's Confidence notes),
+  and the literal completion of pillar 4's own framing: "the stronger
+  the identification, the higher the [access]," now extended past a
+  free ceiling to a paid one instead of stopping there.
+
+  This is a consumer integration, not a from-scratch payments build:
+  `internal/paymentgate/chitgate` adapts
+  [`github.com/justinstimatze/chit/server`](https://github.com/justinstimatze/chit)
+  — a production-validated, live-settled-on-Base-mainnet Go x402
+  merchant library — onto a new `internal/payments.Merchant` interface
+  kept free of `chit`'s own types, so the gating logic in
+  `proxy.handleRateLimited` (challenge on no credential, settle before
+  serve, fail closed on any error) is unit-testable with a fake
+  merchant and no network calls. The two-call shape and its ordering
+  rules — self-mint the first challenge rather than asking `chit` for
+  it (avoids a documented self-charge false positive), settle
+  on-chain via `CloseSession` before ever reporting success — are
+  ported from a sibling project's own proven `chit` integration
+  (`justinstimatze/gemot`'s `internal/chitgate`), not invented fresh.
+
+  Off by default: `config.PaymentsConfig.Enabled` must be explicitly
+  `true` in `robotsyes.yaml`, and a bare `robotsyes serve` with no
+  config file is byte-for-byte unchanged. Scoped hard to what's
+  actually been proven live anywhere in this ecosystem — EVM "exact"
+  only, one flat price, one chain (Base mainnet default), one asset
+  (USDC default), no local ledger or bulk-credit purchase, no
+  automated CI test against a real wallet (mirrors `chit`'s own
+  `serverlive` build-tag split: unit tests only, a documented manual
+  smoke-test step for the real settle path). `go.sum` now carries
+  `chit`'s dependency closure, but nothing from its `x402signer`
+  client-signing subpackage (or its `go-ethereum` dependency) is
+  reachable from robots.yes's own binary — confirmed via `go list
+  -deps`, since robots.yes is the merchant here, never the payer.
+
+  Verified live this session (no funded wallet needed for this half):
+  exceeding a 1-request-per-minute tier locally returns a
+  well-formed x402 `402` challenge matching the real wire shape, and
+  the discovery document's new `payments` block correctly resolves
+  and publishes the effective network/asset when left at their
+  defaults.
+
+  A same-session security review of the staged diff (traced into
+  `chit`'s own `paymentsession.go`/`settlement.go`/`requirepayment.go`
+  rather than assumed from the API surface) found four real gaps,
+  fixed here:
+
+  1. `chit.DetectProtocol` accepts any non-empty header value as a
+     "detected" credential — no format check. A single garbage
+     `Payment-Signature` header would otherwise still force a real
+     outbound settle call to the authorization server on every
+     rate-limited request. `chitgate.validateCredential` now rejects
+     anything that isn't at least a structurally well-formed x402
+     "exact" authorization *before* any network call, reusing chit's
+     own exported `ExtractX402PayerAddress` so the check accepts
+     exactly what chit itself would accept, plus a ported
+     `isHexAddress` check chit's own function stops short of.
+     Live-verified: a garbage credential now round-trips in ~7ms
+     (previously would have run all the way to the real settlement
+     endpoint); a structurally-valid-but-unsigned one still correctly
+     reaches and is rejected by it, in ~260ms.
+  2. `chit.CloseSession` never inspects `SettleResult.AlreadySettled`
+     — only a transport error and an amount comparison. Whether
+     `auth.atxp.ai` would report `AlreadySettled` for a *different*
+     caller replaying an already-spent credential (vs. only the same
+     caller's own retry) isn't something this codebase can verify —
+     that's third-party behavior. `internal/paymentgate/chitgate
+     /replaycache.go` closes the gap unconditionally on robots.yes's
+     own side regardless: a bounded, TTL-expiring, LRU-evicting
+     reserve/commit/release cache (mirroring pillar 3's `nonceCache`,
+     but with a claim step before the slow settle call starts, since
+     unlike a signature nonce this one has a real
+     time-of-check-to-time-of-use window between two concurrent
+     requests presenting the same credential) — reserve before
+     attempting settlement, commit only once confirmed, release on
+     any failure so a legitimate retry after a transient error isn't
+     permanently locked out by robots.yes's own bookkeeping.
+  3. `main.go` called bare `http.ListenAndServe`, with none of
+     Go's read/write/idle timeouts set — a pre-existing gap this
+     feature made materially worse, since it's the first thing in
+     this codebase to add a slow, request-blocking outbound call
+     reachable by any rate-limited client. Now: real
+     `ReadHeaderTimeout`/`ReadTimeout`/`WriteTimeout`/`IdleTimeout` on
+     the `http.Server`, plus a tighter, request-scoped
+     `paymentRequestTimeout` (15s — deliberately shorter than chit's
+     own 65s default client timeout and the server's 30s
+     `WriteTimeout`) wrapped around the `Merchant.RequirePayment` call
+     specifically, so a slow settlement produces this package's own
+     clean 429 rather than an aborted connection.
+  4. `chitgate.New` only checked `PayoutAddress` was non-empty, not
+     that it looked like a real address. Now validated as `0x` + 40
+     hex chars at construction — caught the exact off-by-two typo in
+     this session's own test fixtures and smoke-test config when the
+     check went in.
+
+  20 new tests (11 in the new `replaycache_test.go`, 9 across
+  `chitgate_test.go` and `proxy_test.go`), all passing under `-race`;
+  `make check` clean.
+
 - Pillar 3's signature scheme is now wire-compatible with IETF Web Bot
   Auth (`draft-meunier-web-bot-auth-architecture`, `draft-meunier-
   webbotauth-registry`), the scheme Cloudflare, Anthropic, and OpenAI

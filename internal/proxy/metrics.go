@@ -29,6 +29,11 @@ var knownTiers = []identity.Tier{identity.TierUnverified, identity.TierDeclared,
 type serverMetrics struct {
 	requestsByTier map[identity.Tier]*metrics.Counter
 	deniedByTier   map[identity.Tier]*metrics.Counter
+	// x402Challenged/x402Settled count pillar 4's paid-overflow path
+	// (see handleRateLimited). Not per-tier: a payment credential is
+	// its own grant, independent of identity tier.
+	x402Challenged metrics.Counter
+	x402Settled    metrics.Counter
 }
 
 func newServerMetrics() *serverMetrics {
@@ -55,6 +60,10 @@ func (m *serverMetrics) recordDenied(tier identity.Tier) {
 	}
 }
 
+func (m *serverMetrics) recordPaymentChallenged() { m.x402Challenged.Inc() }
+
+func (m *serverMetrics) recordPaymentSettled() { m.x402Settled.Inc() }
+
 // serveMetrics renders counters in Prometheus text exposition format —
 // no client library, since the project's whole dependency footprint is
 // two libraries and a handful of counters doesn't need a third.
@@ -72,6 +81,14 @@ func (s *Server) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	for _, t := range knownTiers {
 		fmt.Fprintf(w, "robotsyes_rate_limit_denied_total{tier=%q} %d\n", t, s.metrics.deniedByTier[t].Value())
 	}
+
+	fmt.Fprintln(w, "# HELP robotsyes_x402_challenged_total Rate-limit-denied requests offered a payment challenge instead of a flat 429.")
+	fmt.Fprintln(w, "# TYPE robotsyes_x402_challenged_total counter")
+	fmt.Fprintf(w, "robotsyes_x402_challenged_total %d\n", s.metrics.x402Challenged.Value())
+
+	fmt.Fprintln(w, "# HELP robotsyes_x402_settled_total Payment challenges that settled and let the request through.")
+	fmt.Fprintln(w, "# TYPE robotsyes_x402_settled_total counter")
+	fmt.Fprintf(w, "robotsyes_x402_settled_total %d\n", s.metrics.x402Settled.Value())
 
 	fmt.Fprintln(w, "# HELP robotsyes_export_bundle_builds_total Times the bulk export bundle was actually rebuilt, not served from cache.")
 	fmt.Fprintln(w, "# TYPE robotsyes_export_bundle_builds_total counter")

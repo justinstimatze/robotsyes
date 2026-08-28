@@ -19,3 +19,16 @@ rate_limits:
   unverified: 10
   declared: 60
   verified: 300
+
+# Optional pillar 4 extension: past a tier's rate_limits ceiling, offer
+# an x402 payment (https://x402.org) instead of a flat 429. Backed by
+# github.com/justinstimatze/chit — settlement calls out to chit's
+# authorization server and, once a real requester pays, moves real
+# on-chain money to payout_address. Leave enabled: false (the default)
+# unless you actually want that.
+# payments:
+#   enabled: false
+#   payout_address: "0xYourBaseMainnetAddress"
+#   price_cents_per_request: 1
+#   network: "eip155:8453"   # default: Base mainnet
+#   asset: ""                # default: USDC on Base
