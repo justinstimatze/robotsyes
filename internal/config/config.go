@@ -8,6 +8,8 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/justinstimatze/robotsyes/internal/identity"
 )
 
 // Config is the whole robotsyes.yaml document.
@@ -25,10 +27,18 @@ type Config struct {
 
 // ExportConfig configures pillar 2: bulk/structured export.
 type ExportConfig struct {
-	// Paths are fetched from Origin, stripped, and bundled.
+	// Paths are fetched from Origin, stripped, and bundled directly.
 	Paths []string `yaml:"paths"`
 	// TTLSeconds is how long a bundle is served before being rebuilt.
 	TTLSeconds int `yaml:"ttl_seconds"`
+	// SitemapURL, if set, is fetched on every rebuild to discover
+	// additional paths beyond Paths — see internal/export's
+	// discoverSitemapPaths. This is what lets bulk export cover a site's
+	// long tail without hand-enumerating every path in Paths.
+	SitemapURL string `yaml:"sitemap_url"`
+	// MaxSitemapPages caps how many paths SitemapURL can contribute to
+	// one bundle. Zero means export.DefaultMaxSitemapPages.
+	MaxSitemapPages int `yaml:"max_sitemap_pages"`
 }
 
 // Default returns a Config with every field a runnable prototype needs,
@@ -42,9 +52,9 @@ func Default() Config {
 			TTLSeconds: 300,
 		},
 		RateLimits: map[string]int{
-			"unverified": 10,
-			"declared":   60,
-			"verified":   300,
+			string(identity.TierUnverified): 10,
+			string(identity.TierDeclared):   60,
+			string(identity.TierVerified):   300,
 		},
 	}
 }

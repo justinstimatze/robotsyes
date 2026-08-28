@@ -84,6 +84,160 @@ func TestMarkdownNegotiationStripsContent(t *testing.T) {
 	}
 }
 
+func TestNegotiationDefaultsToMarkdownForDeclaredWithNoAcceptPreference(t *testing.T) {
+	s := newTestServer(t, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(identity.SignatureAgentHeader, "https://bot.example/card.json")
+	// No Accept header at all — the case this default exists for.
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") {
+		t.Errorf("Content-Type = %q, want text/markdown prefix (declared tier should default to markdown)", ct)
+	}
+}
+
+func TestNegotiationStaysHTMLForUnverifiedWithNoAcceptPreference(t *testing.T) {
+	s := newTestServer(t, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// No Accept header, and no identity signal either.
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, "<nav>nav</nav>") {
+		t.Errorf("expected raw HTML for an unverified request with no Accept preference, got: %s", body)
+	}
+}
+
+func TestNegotiationExplicitHTMLOverridesTierDefault(t *testing.T) {
+	s := newTestServer(t, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(identity.SignatureAgentHeader, "https://bot.example/card.json")
+	req.Header.Set("Accept", "text/html")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, "<nav>nav</nav>") {
+		t.Errorf("expected an explicit Accept: text/html to override the declared-tier default, got: %s", body)
+	}
+}
+
+func TestServeLLMsTxt(t *testing.T) {
+	s := newTestServer(t, nil)
+	req := httptest.NewRequest(http.MethodGet, llmsTxtPath, nil)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain prefix", ct)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, discoveryPath) {
+		t.Errorf("expected body to point at %q, got: %s", discoveryPath, body)
+	}
+	if !strings.Contains(body, exportPath) {
+		t.Errorf("expected body to point at %q, got: %s", exportPath, body)
+	}
+}
+
+func TestMetricsCountsRequestsByTierAndExcludesItself(t *testing.T) {
+	s := newTestServer(t, nil)
+
+	// Two unverified requests, then a scrape — the scrape itself must not
+	// bump unverified's count, or /metrics would be lying about its own
+	// polling traffic.
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		s.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, metricsPath, nil)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `robotsyes_requests_total{tier="unverified"} 2`) {
+		t.Errorf("expected unverified count of 2, got:\n%s", body)
+	}
+	if !strings.Contains(body, `robotsyes_requests_total{tier="declared"} 0`) {
+		t.Errorf("expected declared count of 0 (the scrape itself shouldn't count), got:\n%s", body)
+	}
+}
+
+func TestMetricsCountsRateLimitDenials(t *testing.T) {
+	s := newTestServer(t, func(c *config.Config) {
+		c.RateLimits = map[string]int{"unverified": 1}
+	})
+	// First request consumes the one token; the second is denied.
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+
+	req := httptest.NewRequest(http.MethodGet, metricsPath, nil)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	if body := w.Body.String(); !strings.Contains(body, `robotsyes_rate_limit_denied_total{tier="unverified"} 1`) {
+		t.Errorf("expected 1 denial recorded, got:\n%s", body)
+	}
+}
+
+// TestMetricsBypassesRateLimit is the regression test for the claim in
+// metricsPath's own doc comment: scraping /metrics must never itself get
+// rate-limited, since it's operator infrastructure polling on its own
+// schedule, not bot traffic. Proven against a limiter that would reject
+// almost anything else — a single request budget, hit many times over.
+func TestMetricsBypassesRateLimit(t *testing.T) {
+	s := newTestServer(t, func(c *config.Config) {
+		c.RateLimits = map[string]int{"unverified": 1}
+	})
+
+	for i := 0; i < 10; i++ {
+		req := httptest.NewRequest(http.MethodGet, metricsPath, nil)
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("scrape %d: status = %d, want 200 (metrics must never be rate-limited)", i, w.Code)
+		}
+	}
+
+	// The limiter itself still works for everything else: this request
+	// (the budget's only slot) succeeds, the next is denied.
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want 429 (confirms the limiter itself is active, not just skipped globally)", w.Code)
+	}
+}
+
+func TestMetricsReportsExportBundleStats(t *testing.T) {
+	s := newTestServer(t, nil)
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, exportPath, nil))
+
+	req := httptest.NewRequest(http.MethodGet, metricsPath, nil)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, "robotsyes_export_bundle_builds_total 1") {
+		t.Errorf("expected 1 bundle build, got:\n%s", body)
+	}
+	if !strings.Contains(body, "robotsyes_export_bundle_pages 2") {
+		t.Errorf("expected 2 pages (matching newTestServer's Export.Paths), got:\n%s", body)
+	}
+	if !strings.Contains(body, "robotsyes_export_bundle_build_failures_total 0") {
+		t.Errorf("expected 0 build failures (nothing failed) and the metric wired through, got:\n%s", body)
+	}
+}
+
 func TestDiscoveryDocument(t *testing.T) {
 	s := newTestServer(t, nil)
 	req := httptest.NewRequest(http.MethodGet, discoveryPath, nil)

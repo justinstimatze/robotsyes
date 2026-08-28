@@ -2,6 +2,79 @@
 
 ## Unreleased
 
+- Content negotiation now defaults toward markdown for a self-identified
+  agent instead of only reacting to an explicit `Accept: text/markdown`.
+  `negotiate.ExpressesNoPreference` reports when the Accept header states
+  no real choice at all (absent, or a bare `*/*`); `Server.wantsMarkdown`
+  falls back to markdown in that case only when the identity tier is
+  declared or verified. An explicit Accept preference — for HTML, or for
+  anything else — always wins over the tier default; this only fills the
+  gap where nothing was actually asked for.
+- Bulk export gzips its ndjson response when `Accept-Encoding` allows it
+  (respecting an explicit `q=0`) — the whole pillar is a bandwidth
+  argument, and ndjson full of repeated JSON keys and HTML-derived
+  markdown compresses well.
+- Added `/.well-known/robots-yes/metrics`: request counts by identity
+  tier, rate-limit denials by tier, and export-bundle build/page counts,
+  in Prometheus text format via a new dependency-free `internal/metrics`
+  package (no client library — the project's whole footprint was two
+  dependencies before this). The endpoint itself is excluded from its own
+  counters and from rate limiting, since it's operator infrastructure
+  polling on its own schedule, not part of the bot-facing contract.
+- Pillar 2 covers the long tail now instead of requiring every path to be
+  hand-listed: `export.ExportConfig.SitemapURL` (+ `MaxSitemapPages`,
+  default 1000) fetches a sitemap on every rebuild and bundles what it
+  finds, following one level of `sitemapindex` (the shape real large sites
+  actually publish — a list of per-section child sitemaps, not one flat
+  file). A `<loc>` pointing at a different host than `Origin` is skipped,
+  not bundled. Sitemap-discovered paths fail individually rather than
+  aborting the whole bundle — auto-discovered input is expected to carry
+  some noise (a stale entry, a page that started 404ing) — while the
+  original hand-listed `Paths` still fail the whole bundle on any error,
+  since that's a deliberate operator list where a broken entry is signal.
+  `NewBundler` now takes a `BundlerConfig` struct instead of three
+  positional args, since it was about to grow past four.
+- Added `/llms.txt` as a compatibility bridge: today's crawlers already
+  check that path by convention (HANDOFF.md's own framing: "a 'maybe'
+  that still points back at the same crawl"), so this exists purely to
+  point them at the real discovery document rather than duplicating it.
+- Extracted `internal/httpx.GetBounded` — the "GET a URL, cap the response
+  size" idiom that `export.Bundler.fetchAndStrip` and
+  `identity.CardFetcher.Fetch` had each independently implemented (the
+  exact drift calque's first scan caught, `.calque/registry.md` #17).
+  Both now call the one shared function; the SSRF-safe dialer and
+  https-only check for card URLs still live entirely in
+  `identity.CardFetcher`'s own `http.Client`, upstream of the shared read.
+- Code-health pass: `SignedVerifier.Verify` split into `verifySignature` /
+  `verifyAgainstCard` / `withinSkew` (cyclomatic complexity 12 → each
+  well under CodeScene's threshold of 9); `parseSignatureInput` rewritten
+  to parse into a map first instead of a switch nested inside a for loop
+  (clears the "Bumpy Road" nesting flag); `signRequest`'s five test
+  arguments collapsed into a `signParams` struct; the two structurally
+  identical "degrades to declared" tests now share an
+  `assertDegradesToDeclared` helper instead of repeating the same
+  assertion body.
+- Wired `calque` in as a second pre-commit gate (warn-only, alongside
+  CodeScene) and adjudicated its first scan: of 18 suspect pairs and one
+  8-member cluster, 16 were false alarms (Go/stdlib interface methods
+  forced to share a signature, same-receiver helper/caller pairs, or a
+  function paired with its own test) — recorded in `.calque/registry.md`
+  so they don't re-surface. Two were real: `config.Default` and
+  `Server.identityCapabilities` both hand-typed the tier name strings
+  ("unverified"/"declared"/"verified") independently of the
+  `identity.Tier` constants that actually define them — a rename in
+  `identity.go` wouldn't have touched either copy. Fixed by routing both
+  through the constants (`identityCapabilities` via a new `tierNames`
+  helper); this incidentally dissolved the cluster, since the shared
+  string literals it was clustering on no longer exist in
+  `identityCapabilities`. Separately, `Bundler.fetchAndStrip` had no
+  response-size cap while `CardFetcher.Fetch` did (from an earlier review
+  pass) — since `Bundle()` holds every fetched page in memory for the
+  whole cache TTL, an unbounded origin response would sit there for as
+  long as the cache does. Fixed with the same `io.LimitReader` idiom,
+  capped at `maxPageResponseBytes` (10MB — origin pages are trusted
+  operator config, not attacker input, so this is a sanity bound rather
+  than the tight 64KB card limit), with its own boundary tests.
 - Pillar 3 is real: `identity.SignedVerifier` grants `TierVerified` to a
   request whose Ed25519 signature checks out against the key published
   at the URL the request itself names (`Signature-Agent` /

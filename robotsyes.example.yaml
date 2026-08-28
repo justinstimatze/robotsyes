@@ -7,6 +7,11 @@ export:
     - /
     - /about
   ttl_seconds: 300
+  # Optional: discover additional paths from a sitemap on every rebuild,
+  # instead of hand-listing every page above. Covers a sitemapindex of
+  # child sitemaps too, one level deep.
+  # sitemap_url: http://localhost:3000/sitemap.xml
+  # max_sitemap_pages: 1000
 
 # requests_per_minute per identity tier — see internal/identity for what
 # grants each tier. Published at /.well-known/robots-yes.json.

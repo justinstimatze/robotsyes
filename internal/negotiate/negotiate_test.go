@@ -31,6 +31,31 @@ func TestWantsMarkdown(t *testing.T) {
 	}
 }
 
+func TestExpressesNoPreference(t *testing.T) {
+	cases := []struct {
+		name   string
+		accept string
+		want   bool
+	}{
+		{"empty", "", true},
+		{"whitespace only", "   ", true},
+		{"bare wildcard", "*/*", true},
+		{"wildcard with q", "*/*;q=0.8", true},
+		{"repeated wildcard", "*/*, */*", true},
+		{"explicit html", "text/html", false},
+		{"explicit markdown", "text/markdown", false},
+		{"non-html non-markdown", "application/json", false},
+		{"wildcard plus explicit", "*/*,text/html;q=0.1", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ExpressesNoPreference(c.accept); got != c.want {
+				t.Errorf("ExpressesNoPreference(%q) = %v, want %v", c.accept, got, c.want)
+			}
+		})
+	}
+}
+
 func TestStrip(t *testing.T) {
 	html := `<!DOCTYPE html>
 <html><head><style>body{color:red}</style><script>track()</script></head>

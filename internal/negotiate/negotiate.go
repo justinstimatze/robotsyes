@@ -23,27 +23,62 @@ func WantsMarkdown(accept string) bool {
 	if accept == "" {
 		return false
 	}
-	mdQ, htmlQ := -1.0, -1.0
+	q := acceptQualities{markdown: -1, html: -1}
 	for _, part := range strings.Split(accept, ",") {
-		mt, q := parseAcceptEntry(part)
-		switch mt {
-		case MarkdownType:
-			if q > mdQ {
-				mdQ = q
-			}
-		case "text/html", "*/*":
-			if q > htmlQ {
-				htmlQ = q
-			}
+		mt, qv := parseAcceptEntry(part)
+		q.observe(mt, qv)
+	}
+	// markdown < 0 means no markdown entry was seen at all; markdown == 0
+	// means one was seen but explicitly disallowed (q=0). Either way,
+	// there's no markdown preference to act on.
+	if q.markdown <= 0 {
+		return false
+	}
+	return q.markdown >= q.html
+}
+
+// acceptQualities tracks the best q-value seen for markdown and for
+// html-or-wildcard while scanning an Accept header's entries, so
+// WantsMarkdown only has to compare two totals instead of branching on
+// every entry itself.
+type acceptQualities struct {
+	markdown, html float64
+}
+
+func (a *acceptQualities) observe(mediaType string, q float64) {
+	switch mediaType {
+	case MarkdownType:
+		a.markdown = maxQ(a.markdown, q)
+	case "text/html", "*/*":
+		a.html = maxQ(a.html, q)
+	}
+}
+
+func maxQ(a, b float64) float64 {
+	if b > a {
+		return b
+	}
+	return a
+}
+
+// ExpressesNoPreference reports whether accept states no real media-type
+// preference at all — either absent, or nothing but a bare "*/*" (an HTTP
+// client's default acceptance of everything, not an actual choice). A
+// caller that wants to apply its own default when nothing was actually
+// asked for — e.g. proxy.Server defaulting a self-identified agent to
+// markdown — uses this instead of treating every non-markdown Accept the
+// same way WantsMarkdown does.
+func ExpressesNoPreference(accept string) bool {
+	accept = strings.TrimSpace(accept)
+	if accept == "" {
+		return true
+	}
+	for _, part := range strings.Split(accept, ",") {
+		if mt, _ := parseAcceptEntry(part); mt != "*/*" {
+			return false
 		}
 	}
-	if mdQ < 0 {
-		return false
-	}
-	if mdQ == 0 {
-		return false
-	}
-	return mdQ >= htmlQ
+	return true
 }
 
 // parseAcceptEntry splits one comma-separated Accept segment into its media

@@ -8,6 +8,11 @@
 # scratch
 *.log
 
+# calque's own calibration telemetry (fire log for every NEW suspect it
+# reports) — not durable memory, unlike .calque/registry.md, which stays
+# tracked
+/.calque/fires.jsonl
+
 # editor / OS cruft
 *.swp
 *.swo

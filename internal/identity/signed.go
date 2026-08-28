@@ -6,13 +6,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/justinstimatze/robotsyes/internal/httpx"
 )
 
 // Card is the self-published Signature Agent Card a requester serves at
@@ -154,24 +155,9 @@ func (f *CardFetcher) Fetch(cardURL string) (Card, error) {
 		return card, nil
 	}
 
-	resp, err := f.client.Get(cardURL)
+	body, err := httpx.GetBounded(f.client, cardURL, maxCardResponseBytes)
 	if err != nil {
 		return Card{}, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return Card{}, fmt.Errorf("fetching agent card: origin returned %s", resp.Status)
-	}
-
-	// Read one byte past the limit so an oversized body is caught by the
-	// explicit length check below, with its own clear error — rather
-	// than relying on truncated JSON to happen to fail to parse.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCardResponseBytes+1))
-	if err != nil {
-		return Card{}, fmt.Errorf("reading agent card: %w", err)
-	}
-	if len(body) > maxCardResponseBytes {
-		return Card{}, fmt.Errorf("agent card response exceeds %d bytes, refusing to decode", maxCardResponseBytes)
 	}
 	var card Card
 	if err := json.Unmarshal(body, &card); err != nil {
@@ -206,43 +192,71 @@ func (v *SignedVerifier) Verify(r *http.Request) Identity {
 	if agentURL == "" {
 		return Identity{Tier: TierUnverified}
 	}
-	declared := Identity{Tier: TierDeclared, AgentID: agentURL}
+	if agentID, ok := v.verifySignature(r, agentURL); ok {
+		return Identity{Tier: TierVerified, AgentID: agentID}
+	}
+	return Identity{Tier: TierDeclared, AgentID: agentURL}
+}
 
+// verifySignature checks the Signature-Input/Signature headers against
+// agentURL's published card. It returns the card's own agent_id (which
+// may differ from agentURL) on success.
+func (v *SignedVerifier) verifySignature(r *http.Request, agentURL string) (agentID string, ok bool) {
 	sigInput := r.Header.Get(SignatureInputHeader)
 	sig := r.Header.Get(SignatureHeader)
 	if sigInput == "" || sig == "" {
-		return declared
+		return "", false
 	}
 	keyID, created, ok := parseSignatureInput(sigInput)
-	if !ok {
-		return declared
-	}
-	if v.MaxSkew > 0 {
-		age := time.Since(time.Unix(created, 0))
-		if age < 0 {
-			age = -age
-		}
-		if age > v.MaxSkew {
-			return declared
-		}
+	if !ok || !v.withinSkew(created) {
+		return "", false
 	}
 	sigBytes, err := base64.StdEncoding.DecodeString(sig)
 	if err != nil {
-		return declared
+		return "", false
 	}
-	card, err := v.Cards.Fetch(agentURL)
+	return v.verifyAgainstCard(r, signatureClaim{agentURL, keyID, created, sigBytes})
+}
+
+// signatureClaim is what verifyAgainstCard needs to check a decoded
+// signature against the card at agentURL: which key signed it, when, and
+// the signature bytes themselves.
+type signatureClaim struct {
+	agentURL string
+	keyID    string
+	created  int64
+	sigBytes []byte
+}
+
+// verifyAgainstCard fetches the card at c.agentURL and checks c.sigBytes
+// against the key named by c.keyID.
+func (v *SignedVerifier) verifyAgainstCard(r *http.Request, c signatureClaim) (agentID string, ok bool) {
+	card, err := v.Cards.Fetch(c.agentURL)
 	if err != nil {
-		return declared
+		return "", false
 	}
-	pub, ok := card.publicKey(keyID)
+	pub, ok := card.publicKey(c.keyID)
 	if !ok {
-		return declared
+		return "", false
 	}
-	msg := signatureBase(r, agentURL, created)
-	if !ed25519.Verify(pub, []byte(msg), sigBytes) {
-		return declared
+	msg := signatureBase(r, c.agentURL, c.created)
+	if !ed25519.Verify(pub, []byte(msg), c.sigBytes) {
+		return "", false
 	}
-	return Identity{Tier: TierVerified, AgentID: card.AgentID}
+	return card.AgentID, true
+}
+
+// withinSkew reports whether created is within MaxSkew of now. A
+// non-positive MaxSkew disables the check.
+func (v *SignedVerifier) withinSkew(created int64) bool {
+	if v.MaxSkew <= 0 {
+		return true
+	}
+	age := time.Since(time.Unix(created, 0))
+	if age < 0 {
+		age = -age
+	}
+	return age <= v.MaxSkew
 }
 
 // signatureBase is the exact byte sequence a signer must sign — method,
@@ -260,23 +274,19 @@ func signatureBase(r *http.Request, agentURL string, created int64) string {
 // deliberately small structured-field parser, not the general RFC 9421
 // dictionary grammar.
 func parseSignatureInput(s string) (keyID string, created int64, ok bool) {
+	params := make(map[string]string)
 	for _, part := range strings.Split(s, ";") {
-		part = strings.TrimSpace(part)
-		name, val, found := strings.Cut(part, "=")
+		name, val, found := strings.Cut(strings.TrimSpace(part), "=")
 		if !found {
 			continue
 		}
-		val = strings.Trim(val, `"`)
-		switch name {
-		case "keyid":
-			keyID = val
-		case "created":
-			c, err := strconv.ParseInt(val, 10, 64)
-			if err != nil {
-				return "", 0, false
-			}
-			created = c
-		}
+		params[name] = strings.Trim(val, `"`)
+	}
+
+	keyID = params["keyid"]
+	created, err := strconv.ParseInt(params["created"], 10, 64)
+	if err != nil {
+		return "", 0, false
 	}
 	return keyID, created, keyID != "" && created != 0
 }

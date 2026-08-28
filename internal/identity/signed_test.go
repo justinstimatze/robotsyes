@@ -56,14 +56,34 @@ func newTestCardFetcher(client *http.Client, ttl time.Duration) *CardFetcher {
 	}
 }
 
-// signRequest signs r for agentURL/keyID/created using priv, and sets the
-// three headers a real signer would send.
-func signRequest(r *http.Request, priv ed25519.PrivateKey, agentURL, keyID string, created int64) {
-	r.Header.Set(SignatureAgentHeader, agentURL)
-	r.Header.Set(SignatureInputHeader, fmt.Sprintf(`keyid="%s";created=%d`, keyID, created))
-	msg := signatureBase(r, agentURL, created)
-	sig := ed25519.Sign(priv, []byte(msg))
+// signParams is what signRequest needs beyond the request itself: the key
+// to sign with, and the claims (agentURL, keyID, created) a real signer
+// would put in Signature-Agent/Signature-Input.
+type signParams struct {
+	priv     ed25519.PrivateKey
+	agentURL string
+	keyID    string
+	created  int64
+}
+
+// signRequest signs r per p, and sets the three headers a real signer
+// would send.
+func signRequest(r *http.Request, p signParams) {
+	r.Header.Set(SignatureAgentHeader, p.agentURL)
+	r.Header.Set(SignatureInputHeader, fmt.Sprintf(`keyid="%s";created=%d`, p.keyID, p.created))
+	msg := signatureBase(r, p.agentURL, p.created)
+	sig := ed25519.Sign(p.priv, []byte(msg))
 	r.Header.Set(SignatureHeader, base64.StdEncoding.EncodeToString(sig))
+}
+
+// assertDegradesToDeclared calls v.Verify(req) and fails the test unless
+// it returns TierDeclared, naming reason in the failure message.
+func assertDegradesToDeclared(t *testing.T, v *SignedVerifier, req *http.Request, reason string) {
+	t.Helper()
+	id := v.Verify(req)
+	if id.Tier != TierDeclared {
+		t.Fatalf("Tier = %v, want %v (%s)", id.Tier, TierDeclared, reason)
+	}
 }
 
 func TestSignedVerifierValidSignature(t *testing.T) {
@@ -75,7 +95,7 @@ func TestSignedVerifierValidSignature(t *testing.T) {
 
 	v := NewSignedVerifier(newTestCardFetcher(srv.Client(), time.Minute))
 	req := httptest.NewRequest(http.MethodGet, "/some/path", nil)
-	signRequest(req, priv, srv.URL+"/card.json", "key-1", time.Now().Unix())
+	signRequest(req, signParams{priv, srv.URL + "/card.json", "key-1", time.Now().Unix()})
 
 	id := v.Verify(req)
 	if id.Tier != TierVerified {
@@ -109,15 +129,12 @@ func TestSignedVerifierTamperedSignatureDegradesToDeclared(t *testing.T) {
 
 	v := NewSignedVerifier(newTestCardFetcher(srv.Client(), time.Minute))
 	req := httptest.NewRequest(http.MethodGet, "/a", nil)
-	signRequest(req, priv, srv.URL+"/card.json", "key-1", time.Now().Unix())
+	signRequest(req, signParams{priv, srv.URL + "/card.json", "key-1", time.Now().Unix()})
 	// Tamper: change the path after signing, so the signed message no
 	// longer matches what's actually being requested.
 	req.URL.Path = "/b"
 
-	id := v.Verify(req)
-	if id.Tier != TierDeclared {
-		t.Fatalf("Tier = %v, want %v (tampered request should not verify)", id.Tier, TierDeclared)
-	}
+	assertDegradesToDeclared(t, v, req, "tampered request should not verify")
 }
 
 func TestSignedVerifierExpiredSignatureDegradesToDeclared(t *testing.T) {
@@ -127,12 +144,9 @@ func TestSignedVerifierExpiredSignatureDegradesToDeclared(t *testing.T) {
 	v := NewSignedVerifier(NewCardFetcher(time.Minute, DefaultMaxCardCacheEntries))
 	v.MaxSkew = time.Minute
 	req := httptest.NewRequest(http.MethodGet, "/a", nil)
-	signRequest(req, priv, srv.URL+"/card.json", "key-1", time.Now().Add(-time.Hour).Unix())
+	signRequest(req, signParams{priv, srv.URL + "/card.json", "key-1", time.Now().Add(-time.Hour).Unix()})
 
-	id := v.Verify(req)
-	if id.Tier != TierDeclared {
-		t.Fatalf("Tier = %v, want %v (stale signature should not verify)", id.Tier, TierDeclared)
-	}
+	assertDegradesToDeclared(t, v, req, "stale signature should not verify")
 }
 
 func TestSignedVerifierUnknownKeyIDDegradesToDeclared(t *testing.T) {
@@ -141,12 +155,9 @@ func TestSignedVerifierUnknownKeyIDDegradesToDeclared(t *testing.T) {
 
 	v := NewSignedVerifier(newTestCardFetcher(srv.Client(), time.Minute))
 	req := httptest.NewRequest(http.MethodGet, "/a", nil)
-	signRequest(req, priv, srv.URL+"/card.json", "wrong-key", time.Now().Unix())
+	signRequest(req, signParams{priv, srv.URL + "/card.json", "wrong-key", time.Now().Unix()})
 
-	id := v.Verify(req)
-	if id.Tier != TierDeclared {
-		t.Fatalf("Tier = %v, want %v (unknown keyid should not verify)", id.Tier, TierDeclared)
-	}
+	assertDegradesToDeclared(t, v, req, "unknown keyid should not verify")
 }
 
 // TestSignedVerifierUnreachableCardDegradesToDeclared confirms Verify()
@@ -159,12 +170,9 @@ func TestSignedVerifierUnreachableCardDegradesToDeclared(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	v := NewSignedVerifier(NewCardFetcher(time.Minute, DefaultMaxCardCacheEntries))
 	req := httptest.NewRequest(http.MethodGet, "/a", nil)
-	signRequest(req, priv, "https://127.0.0.1:1/card.json", "key-1", time.Now().Unix())
+	signRequest(req, signParams{priv, "https://127.0.0.1:1/card.json", "key-1", time.Now().Unix()})
 
-	id := v.Verify(req)
-	if id.Tier != TierDeclared {
-		t.Fatalf("Tier = %v, want %v (unreachable card should not verify)", id.Tier, TierDeclared)
-	}
+	assertDegradesToDeclared(t, v, req, "unreachable card should not verify")
 }
 
 func TestCardFetcherCaches(t *testing.T) {

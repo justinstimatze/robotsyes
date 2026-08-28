@@ -6,6 +6,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 const (
 	discoveryPath = "/.well-known/robots-yes.json"
 	exportPath    = "/.well-known/robots-yes/export.ndjson"
+	llmsTxtPath   = "/llms.txt"
 )
 
 // Server is the assembled robots.yes proxy.
@@ -33,6 +35,7 @@ type Server struct {
 	bundler  *export.Bundler
 	upstream *httputil.ReverseProxy
 	client   *http.Client
+	metrics  *serverMetrics
 }
 
 // New assembles a Server from a Config. verifier chooses which
@@ -53,16 +56,30 @@ func New(cfg config.Config, verifier identity.Verifier) (*Server, error) {
 		cfg:      cfg,
 		verifier: verifier,
 		limiter:  ratelimit.New(limits),
-		bundler:  export.NewBundler(cfg.Origin, cfg.Export.Paths, ttl),
+		bundler: export.NewBundler(export.BundlerConfig{
+			Origin:          cfg.Origin,
+			Paths:           cfg.Export.Paths,
+			TTL:             ttl,
+			SitemapURL:      cfg.Export.SitemapURL,
+			MaxSitemapPages: cfg.Export.MaxSitemapPages,
+		}),
 		upstream: httputil.NewSingleHostReverseProxy(target),
 		client:   &http.Client{Timeout: 10 * time.Second},
+		metrics:  newServerMetrics(),
 	}, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == metricsPath {
+		s.serveMetrics(w, r)
+		return
+	}
+
 	id := s.verifier.Verify(r)
+	s.metrics.recordRequest(id.Tier)
 	tier := string(id.Tier)
 	if !s.limiter.Allow(tier, clientKey(r, id)) {
+		s.metrics.recordDenied(id.Tier)
 		s.writeRateLimited(w, tier)
 		return
 	}
@@ -74,14 +91,35 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case exportPath:
 		s.bundler.ServeHTTP(w, r)
 		return
+	case llmsTxtPath:
+		s.serveLLMsTxt(w, r)
+		return
 	}
 
 	w.Header().Set("Vary", "Accept")
-	if negotiate.WantsMarkdown(r.Header.Get("Accept")) {
+	if s.wantsMarkdown(r.Header.Get("Accept"), id.Tier) {
 		s.serveMarkdown(w, r)
 		return
 	}
 	s.upstream.ServeHTTP(w, r)
+}
+
+// wantsMarkdown decides whether to serve the stripped view. An explicit
+// Accept preference always wins (negotiate.WantsMarkdown). When the
+// request expresses no preference at all — no Accept header, or a bare
+// "*/*" — a self-identified agent (declared or verified) defaults to
+// markdown instead of HTML: a signed or declared identity is itself a
+// stronger signal of agent intent than an anonymous client's implicit
+// "accept anything." An unverified request keeps the current HTML
+// default, since there's no signal at all to act on.
+func (s *Server) wantsMarkdown(accept string, tier identity.Tier) bool {
+	if negotiate.WantsMarkdown(accept) {
+		return true
+	}
+	if !negotiate.ExpressesNoPreference(accept) {
+		return false
+	}
+	return tier == identity.TierDeclared || tier == identity.TierVerified
 }
 
 // clientKey identifies a caller for rate-limit bucketing. TierVerified
@@ -175,6 +213,17 @@ type discoveryIdentity struct {
 	Algorithm            string   `json:"algorithm,omitempty"`
 }
 
+// tierNames renders tiers as the strings the discovery document publishes,
+// so the advertised method list can never drift from the identity.Tier
+// constants that clientKey and Verify actually key on.
+func tierNames(tiers ...identity.Tier) []string {
+	names := make([]string, len(tiers))
+	for i, t := range tiers {
+		names[i] = string(t)
+	}
+	return names
+}
+
 // identityCapabilities describes what the Server can actually check,
 // keyed off the concrete Verifier it was built with — so the discovery
 // document never advertises a tier the running server can't grant.
@@ -182,7 +231,7 @@ func (s *Server) identityCapabilities() discoveryIdentity {
 	switch s.verifier.(type) {
 	case *identity.SignedVerifier:
 		return discoveryIdentity{
-			Methods:              []string{"unverified", "declared", "verified"},
+			Methods:              tierNames(identity.TierUnverified, identity.TierDeclared, identity.TierVerified),
 			DeclareVia:           identity.SignatureAgentHeader,
 			SignatureInputHeader: identity.SignatureInputHeader,
 			SignatureHeader:      identity.SignatureHeader,
@@ -190,12 +239,27 @@ func (s *Server) identityCapabilities() discoveryIdentity {
 		}
 	case identity.DeclaredVerifier:
 		return discoveryIdentity{
-			Methods:    []string{"unverified", "declared"},
+			Methods:    tierNames(identity.TierUnverified, identity.TierDeclared),
 			DeclareVia: identity.SignatureAgentHeader,
 		}
 	default:
-		return discoveryIdentity{Methods: []string{"unverified"}}
+		return discoveryIdentity{Methods: tierNames(identity.TierUnverified)}
 	}
+}
+
+// serveLLMsTxt is the bridge from the llms.txt convention agents already
+// check by habit — HANDOFF.md's own framing is that llms.txt is a "maybe"
+// that still points back at the same crawl, so this exists purely to get
+// an agent from the path it already knows to check to the actual "yes"
+// file, not to duplicate what the discovery document says.
+func (s *Server) serveLLMsTxt(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprintf(w, "# %s\n\n", s.cfg.Origin)
+	fmt.Fprintf(w, "This site publishes a robots.yes capabilities document: content\n")
+	fmt.Fprintf(w, "negotiation, bulk export, and published rate limits keyed to identity.\n\n")
+	fmt.Fprintf(w, "- Discovery: %s\n", discoveryPath)
+	fmt.Fprintf(w, "- Bulk export: %s\n", exportPath)
+	fmt.Fprintf(w, "- Content negotiation: send `Accept: %s` on any page for a stripped view\n", negotiate.MarkdownType)
 }
 
 func (s *Server) serveDiscovery(w http.ResponseWriter, r *http.Request) {
