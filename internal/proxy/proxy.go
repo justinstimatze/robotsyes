@@ -90,7 +90,7 @@ func New(cfg config.Config, verifier identity.Verifier, merchant payments.Mercha
 	return &Server{
 		cfg:      cfg,
 		verifier: verifier,
-		limiter:  ratelimit.New(limits),
+		limiter:  ratelimit.New(limits, ratelimit.DefaultMaxBucketEntries),
 		bundler: export.NewBundler(export.BundlerConfig{
 			Origin:             cfg.Origin,
 			Paths:              cfg.Export.Paths,
