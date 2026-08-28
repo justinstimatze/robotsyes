@@ -1,43 +1,13 @@
 # robots.yes
 
-A self-hostable reverse proxy that says yes to well-behaved bots: content
-negotiation, bulk/structured export, verified identity, and a published rate
-limit instead of a 403 you have to discover by tripping it.
+**A self-hostable reverse proxy that answers content negotiation, bulk
+export, bot identity verification, and graduated rate limits for any
+existing site, with no changes to the origin.**
 
-`robots.txt` has been the web's "no" file since 1994. `llms.txt` is a
-"maybe" that still points back at the same crawl. robots.yes sits in front
-of your existing site and answers four things a crawler or agent actually
-needs, without you changing your origin at all.
-
-## The four pillars
-
-1. **Content negotiation** — `Accept: text/markdown` on the same URL returns
-   a stripped page (no nav/JS/CSS) instead of full HTML, via `Vary: Accept`
-   so caches don't serve the wrong version to the wrong requester.
-2. **Bulk/structured export** — `/.well-known/robots-yes/export.ndjson`
-   bundles every configured page as one gzip-able download, so a crawler
-   stops hammering your origin's long tail one request at a time.
-   `export-manifest.json` lets a returning crawler check one hash to see if
-   anything changed at all before re-fetching, and an optional
-   BEP-19-compatible `export.torrent` lets a swarm form for long-lived,
-   long-tail content — robots.yes only ever plays the web-seed's role, it
-   never runs a tracker or peer client.
-3. **Verified bot identity** — Ed25519-signed Signature Agent Cards, wire-
-   compatible with the IETF Web Bot Auth draft already running in
-   production at Cloudflare, Anthropic, and OpenAI. A request that signs
-   correctly against the key published at its own claimed URL earns a
-   higher-trust tier; no central registry required for the crypto check
-   itself.
-4. **Graduated, published rate limits** — a tier's ceiling is published in
-   the discovery document up front, keyed by identity tier and (optionally)
-   backed by an [x402](https://x402.org) paid-overflow option past the free
-   ceiling instead of a flat 429.
-
-Every pillar rides an existing, already-adopted wire format rather than
-inventing a new spec: plain Markdown/`llms.txt` for negotiation, BEP 19 for
-the torrent export, the IETF Web Bot Auth draft for identity, x402 for paid
-overflow. See [HANDOFF.md](HANDOFF.md) for the design reasoning and prior
-art behind each choice.
+It sits in front of an HTTP origin and adds four things a crawler or agent
+can use, all published at `/.well-known/robots-yes.json` so a client can
+discover what a given deployment actually supports instead of assuming a
+fixed feature set.
 
 ## Quickstart
 
@@ -45,28 +15,57 @@ art behind each choice.
 go install github.com/justinstimatze/robotsyes/cmd/robotsyes@latest
 
 cp robotsyes.example.yaml robotsyes.yaml
-# edit robotsyes.yaml: point origin at your real site
+# edit robotsyes.yaml: set origin to the real site being proxied
+```
 
+```yaml
+origin: http://localhost:3000
+addr: ":8080"
+export:
+  paths: ["/", "/about"]
+rate_limits:
+  unverified: 10
+  declared: 60
+  verified: 300
+```
+
+```sh
 robotsyes serve -config robotsyes.yaml
 ```
 
-A bare `robotsyes serve` with no `-config` flag runs against
-`config.Default()` — useful for a quick smoke test, not a real deployment
-(no origin is configured).
+```sh
+curl -H 'Accept: text/markdown' http://localhost:8080/about
+```
 
-Every capability the running server actually has — which tiers it can
-grant, whether the torrent or payments extensions are on — is published at
-`/.well-known/robots-yes.json`. A client should read that document rather
-than assuming a fixed feature set.
+`robotsyes serve` with no `-config` runs against `config.Default()` — no
+origin is set, so it's a smoke test, not a deployment.
 
-## Configuration
+## Status
 
-See [`robotsyes.example.yaml`](robotsyes.example.yaml) for a complete,
-commented example. The two required fields are `origin` (the real site
-robots.yes proxies to) and `export.paths` (or `export.sitemap_url`, to
-discover pages automatically instead of hand-listing them). Everything
-else — the torrent export, x402 paid overflow — is opt-in and off by
-default.
+- **Content negotiation**: done. `Accept: text/markdown` on any proxied URL
+  returns a stripped page instead of full HTML, via `Vary: Accept`. No
+  config required beyond `origin`.
+- **Bulk export**: done. `export.ndjson` bundles every configured page;
+  `export-manifest.json` adds a per-page hash plus one bundle-level hash so
+  a repeat crawl can check "did anything change" in one request.
+  `export.torrent` (BEP-19 web seed) is opt-in — see `export.torrent` in
+  `robotsyes.example.yaml`.
+- **Identity verification**: done, wire-compatible with IETF Web Bot Auth
+  (`draft-meunier-web-bot-auth-architecture`), the scheme Cloudflare,
+  Anthropic, and OpenAI already run in production. Verified against the
+  draft's own RFC 9421 Appendix A.2 worked examples. Handles the signature
+  check only — there's no trust/reputation registry, and none is required
+  for a request to earn the verified tier.
+- **Graduated rate limits**: done. Ceilings are set per identity tier in
+  config and published in the discovery document. The optional x402
+  paid-overflow tier (`payments.enabled`) is scoped to what's actually
+  proven live: EVM "exact" scheme only, one flat price, Base mainnet and
+  USDC by default, no local ledger or bulk-credit purchase. Settlement is
+  delegated to [`justinstimatze/chit`](https://github.com/justinstimatze/chit).
+
+See [CHANGELOG.md](CHANGELOG.md) for what shipped and why, and
+[HANDOFF.md](HANDOFF.md) for the design reasoning and prior art behind each
+pillar.
 
 ## Well-known routes
 
@@ -80,13 +79,24 @@ default.
 | `/.well-known/signature-agent-card` | This server's own Signature Agent Card (Web Bot Auth) |
 | `/llms.txt` | Compatibility bridge pointing at the discovery document |
 
-## Status
+## Configuration
 
-Reference implementation, single Go binary, MIT-licensed. Two required
-runtime dependencies beyond the standard library and `gopkg.in/yaml.v3`:
-`anacrolix/torrent` (torrent construction only, not its peer client) and
-`justinstimatze/chit` (x402 settlement, only reachable when payments are
-enabled). See [CHANGELOG.md](CHANGELOG.md) for what's shipped.
+See [`robotsyes.example.yaml`](robotsyes.example.yaml) for every field,
+commented. Required: `origin`, and either `export.paths` or
+`export.sitemap_url`. Everything else — torrent export, x402 payments — is
+opt-in and off by default; a config that sets neither produces the same
+behavior as no config at all.
+
+## Testing
+
+```sh
+go build ./...
+go vet ./...
+go test ./... -race
+```
+
+No live-network test suite — the x402 payment path is exercised with a
+fake `payments.Merchant` in unit tests, not a funded wallet.
 
 ## Security
 
