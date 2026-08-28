@@ -13,6 +13,10 @@
 # tracked
 /.calque/fires.jsonl
 
+# plancheck's own debug artifact from the last check_plan run — not
+# durable memory, same reasoning as calque's fires.jsonl above
+/.plancheck-debug.json
+
 # editor / OS cruft
 *.swp
 *.swo

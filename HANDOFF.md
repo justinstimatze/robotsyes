@@ -133,15 +133,31 @@ one deliberate design principle."
 - Medium confidence: the "no bundled product/library exists" verdict — corroborated
   independently by four separate research passes converging on the same answer, which is
   reasonably strong, but none of the four did an exhaustive search.
-- Lower confidence / flagged for re-verification before this becomes load-bearing: the
-  ATML mechanism's exact scope (subagent-reported, only the abstract was checked directly,
-  not the full paper) and the OAuth-delegation-token detail specifically before it anchors any design decision (see above).
+- **Resolved** (full paper read directly, not just the abstract, in a later session): the
+  OAuth-delegation-token detail is real — §4.4 describes an `Agent-Auth` header carrying a
+  token derived from a human's existing subscription credential, answering "does this agent
+  inherit *my* subscription." That's a different question from this project's pillar 3
+  (Ed25519-signed Signature Agent Cards, answering "is this actually the agent it claims to
+  be, verifiable with no live handshake") — the two are complementary, not overlapping; a
+  request could carry both. ATML (the paper's proposed agent-content format) has no
+  confirmed production adopter anywhere found in a broader 2026 SOTA search — pillar 1's bet
+  on plain Markdown + llms.txt is the better-grounded position: llms.txt already has real
+  adoption (8.7% of the top 1,000 sites, June 2026) and a W3C standardization draft in
+  progress, versus ATML's single-paper status.
+- The same later-session search surfaced the piece worth acting on: IETF Web Bot Auth
+  (`draft-meunier-web-bot-auth-architecture`, `draft-meunier-webbotauth-registry`) is
+  already running in production at Cloudflare, Anthropic, and OpenAI as the de facto
+  identity layer for agent traffic — ahead of the IETF even chartering a working group for
+  it. Pillar 3 built the same shape (self-published, Ed25519-signed card fetched by URL, a
+  `Signature-Agent` header) with an incompatible custom wire format; that gap is now closed
+  (see CHANGELOG.md's "Unreleased" entry) — pillar 3 is wire-compatible with the real,
+  already-deployed scheme, not just conceptually similar to it.
 
 ## Open questions for prototyping
 
-- Read the full "Towards an Agent-First Web" paper (not just the abstract) before
+- ~~Read the full "Towards an Agent-First Web" paper (not just the abstract) before
   designing around it — decide whether ATML overlaps with or diverges from the content-
-  negotiation pillar above.
+  negotiation pillar above.~~ Done — see Confidence notes above.
 - Decide the actual deliverable shape: a spec doc (like llms.txt), a reference
   implementation/library (like nothing that currently exists per the search above), or
   both.

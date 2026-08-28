@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- Pillar 3's signature scheme is now wire-compatible with IETF Web Bot
+  Auth (`draft-meunier-web-bot-auth-architecture`, `draft-meunier-
+  webbotauth-registry`), the scheme Cloudflare, Anthropic, and OpenAI
+  already run in production — closing the hedge the previous
+  implementation's own comment carried ("not a claim of wire
+  compatibility"). Concretely: `identity.Card` is now a JWKS-shaped
+  Signature Agent Card (`client_name` + `keys` as JWK `OKP`/`Ed25519`
+  objects, `x` base64url-encoded per RFC 8037) instead of a bespoke
+  `agent_id`/`public_key` shape; `Signature-Input` is parsed as an RFC
+  9421 signature-params dictionary entry covering `@authority` and
+  optionally `signature-agent`, with `created`/`expires`/`keyid`/`alg`/
+  `nonce`/`tag` parameters (`alg="ed25519"` and `tag="web-bot-auth"`
+  required exactly); `signatureBase` echoes the parsed value's raw
+  component-list-and-params substring verbatim rather than reassembling
+  it, since RFC 9421 requires that line to match what the signer actually
+  sent byte-for-byte, order included. `Signature-Agent` header values are
+  now unquoted per RFC 8941 (a real WBA signer always sends a quoted
+  sf-string), leniently — a bare unquoted value still passes through
+  unchanged rather than being rejected.
+
+  Deliberate, user-confirmed trade: signatures are now scoped to
+  `@authority` (+ optionally `signature-agent`), not `@method`/`@path` as
+  before — a signature is valid for any request to the same host until it
+  expires, with a new bounded, TTL-expiring, LRU-evicting nonce cache
+  (`internal/identity/noncecache.go`, mirroring `cardcache.go`'s shape) as
+  the sole per-request replay defense, plus a `MaxValidity` bound so a
+  signer can't hand out an arbitrarily long-lived signature and force the
+  nonce cache to remember it indefinitely. This is the trade for real
+  interop with Cloudflare/Anthropic/OpenAI-style signers rather than this
+  project's own narrower, tighter-scoped convention.
+
+  Verified against the wire format itself, not just internal
+  self-consistency: `TestSignatureConformsToWebBotAuthDraftExamples`
+  checks `signatureBase`'s output against the IETF draft's own Appendix
+  A.2 worked examples (RFC 9421 Appendix B.1.4's published Ed25519 test
+  key) — this caught two real transcription errors while writing the
+  test (a swapped param order, a swapped `expires` value) and one genuine
+  erratum in the draft's own prose (Appendix A.2.2 pairs a nonce and
+  Signature that don't verify against each other; Cloudflare's own
+  maintained `web-bot-auth` conformance-suite JSON has a self-consistent
+  equivalent, used instead). The proxy's discovery document
+  (`identityCapabilities`) now publishes the card discovery convention
+  (`/.well-known/signature-agent-card`), the required signature
+  parameters, and a reference to the spec being spoken.
+
 - Content negotiation now defaults toward markdown for a self-identified
   agent instead of only reacting to an explicit `Accept: text/markdown`.
   `negotiate.ExpressesNoPreference` reports when the Accept header states

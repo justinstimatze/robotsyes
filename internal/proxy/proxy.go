@@ -211,6 +211,21 @@ type discoveryIdentity struct {
 	SignatureInputHeader string   `json:"signature_input_header,omitempty"`
 	SignatureHeader      string   `json:"signature_header,omitempty"`
 	Algorithm            string   `json:"algorithm,omitempty"`
+	// CardDiscovery is the well-known path convention a Signature Agent
+	// Card is expected to be published at, per the WebBotAuth registry
+	// draft — the Signature-Agent header can still name any https URL,
+	// this is just where a real signer conventionally already puts it.
+	CardDiscovery string `json:"card_discovery,omitempty"`
+	// RequiredSignatureParams are the Signature-Input parameters this
+	// server requires and checks: a request missing any of these, or
+	// carrying the wrong Algorithm/Tag, degrades to TierDeclared exactly
+	// as an unsigned claim would.
+	RequiredSignatureParams []string `json:"required_signature_params,omitempty"`
+	Tag                     string   `json:"tag,omitempty"`
+	// Spec names the wire format this server actually speaks, for an
+	// implementer who wants the authoritative definition rather than
+	// this document's summary of it.
+	Spec string `json:"spec,omitempty"`
 }
 
 // tierNames renders tiers as the strings the discovery document publishes,
@@ -231,11 +246,15 @@ func (s *Server) identityCapabilities() discoveryIdentity {
 	switch s.verifier.(type) {
 	case *identity.SignedVerifier:
 		return discoveryIdentity{
-			Methods:              tierNames(identity.TierUnverified, identity.TierDeclared, identity.TierVerified),
-			DeclareVia:           identity.SignatureAgentHeader,
-			SignatureInputHeader: identity.SignatureInputHeader,
-			SignatureHeader:      identity.SignatureHeader,
-			Algorithm:            "ed25519",
+			Methods:                 tierNames(identity.TierUnverified, identity.TierDeclared, identity.TierVerified),
+			DeclareVia:              identity.SignatureAgentHeader,
+			SignatureInputHeader:    identity.SignatureInputHeader,
+			SignatureHeader:         identity.SignatureHeader,
+			Algorithm:               "ed25519",
+			CardDiscovery:           "/.well-known/signature-agent-card",
+			RequiredSignatureParams: []string{"created", "expires", "keyid", "alg", "nonce", "tag"},
+			Tag:                     "web-bot-auth",
+			Spec:                    "draft-meunier-web-bot-auth-architecture (IETF), wire-compatible incl. Cloudflare/Anthropic/OpenAI implementations",
 		}
 	case identity.DeclaredVerifier:
 		return discoveryIdentity{

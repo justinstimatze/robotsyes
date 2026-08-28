@@ -16,14 +16,14 @@ func TestCardCacheGetMiss(t *testing.T) {
 
 func TestCardCachePutThenGet(t *testing.T) {
 	c := newCardCache(10, time.Minute)
-	want := Card{AgentID: "https://bot.example/"}
+	want := Card{ClientName: "https://bot.example/"}
 	c.put("k", want)
 
 	got, ok := c.get("k")
 	if !ok {
 		t.Fatal("expected a hit after put")
 	}
-	if got.AgentID != want.AgentID {
+	if got.ClientName != want.ClientName {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 	if n := c.len(); n != 1 {
@@ -33,7 +33,7 @@ func TestCardCachePutThenGet(t *testing.T) {
 
 func TestCardCacheExpiresAfterTTL(t *testing.T) {
 	c := newCardCache(10, time.Minute)
-	c.put("k", Card{AgentID: "a"})
+	c.put("k", Card{ClientName: "a"})
 
 	// Backdate the entry instead of sleeping.
 	el := c.items["k"]
@@ -49,9 +49,9 @@ func TestCardCacheExpiresAfterTTL(t *testing.T) {
 
 func TestCardCacheEvictsLeastRecentlyUsedAtCapacity(t *testing.T) {
 	c := newCardCache(2, time.Minute)
-	c.put("a", Card{AgentID: "a"})
-	c.put("b", Card{AgentID: "b"})
-	c.put("c", Card{AgentID: "c"}) // over capacity: evicts "a" (oldest, never touched)
+	c.put("a", Card{ClientName: "a"})
+	c.put("b", Card{ClientName: "b"})
+	c.put("c", Card{ClientName: "c"}) // over capacity: evicts "a" (oldest, never touched)
 
 	if _, ok := c.get("a"); ok {
 		t.Error("expected \"a\" to have been evicted")
@@ -72,14 +72,14 @@ func TestCardCacheEvictsLeastRecentlyUsedAtCapacity(t *testing.T) {
 // shouldn't get evicted just because it happened to be inserted first.
 func TestCardCacheHitPromotesEntry(t *testing.T) {
 	c := newCardCache(2, time.Minute)
-	c.put("a", Card{AgentID: "a"})
-	c.put("b", Card{AgentID: "b"})
+	c.put("a", Card{ClientName: "a"})
+	c.put("b", Card{ClientName: "b"})
 
 	if _, ok := c.get("a"); !ok {
 		t.Fatal("expected \"a\" to be cached")
 	} // "a" is now more recently used than "b"
 
-	c.put("c", Card{AgentID: "c"}) // over capacity: should evict "b", not "a"
+	c.put("c", Card{ClientName: "c"}) // over capacity: should evict "b", not "a"
 
 	if _, ok := c.get("a"); !ok {
 		t.Error("expected \"a\" to survive eviction — it was used more recently than \"b\"")
@@ -91,15 +91,15 @@ func TestCardCacheHitPromotesEntry(t *testing.T) {
 
 func TestCardCachePutOnExistingKeyUpdatesWithoutGrowing(t *testing.T) {
 	c := newCardCache(10, time.Minute)
-	c.put("k", Card{AgentID: "old"})
-	c.put("k", Card{AgentID: "new"})
+	c.put("k", Card{ClientName: "old"})
+	c.put("k", Card{ClientName: "new"})
 
 	got, ok := c.get("k")
 	if !ok {
 		t.Fatal("expected a hit")
 	}
-	if got.AgentID != "new" {
-		t.Errorf("AgentID = %q, want %q (put should overwrite, not duplicate)", got.AgentID, "new")
+	if got.ClientName != "new" {
+		t.Errorf("ClientName = %q, want %q (put should overwrite, not duplicate)", got.ClientName, "new")
 	}
 	if n := c.len(); n != 1 {
 		t.Errorf("len = %d, want 1", n)
@@ -145,7 +145,7 @@ func TestCardCacheConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < opsPerGoroutine; i++ {
 				key := fmt.Sprintf("key-%d", (g*opsPerGoroutine+i)%distinctKeys)
-				c.put(key, Card{AgentID: key})
+				c.put(key, Card{ClientName: key})
 				c.get(key)
 			}
 		}(g)

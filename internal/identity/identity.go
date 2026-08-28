@@ -9,7 +9,10 @@
 // package defines the seam (Verifier) it would plug into.
 package identity
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 // Tier is a graduated identity tier: the stronger the identification, the
 // higher the tier, and (via internal/ratelimit) the higher the ceiling.
@@ -48,10 +51,34 @@ func (NoopVerifier) Verify(*http.Request) Identity {
 }
 
 // SignatureAgentHeader is the header a bot uses to self-declare an agent
-// identity under DeclaredVerifier. Named after the WebBotAuth draft's
-// "Signature-Agent" header, ahead of this package actually checking a
-// signature over it.
+// identity under DeclaredVerifier, and the header SignedVerifier checks a
+// signature over — wire-compatible with the WebBotAuth draft's
+// "Signature-Agent" header (draft-meunier-web-bot-auth-architecture §4.1).
 const SignatureAgentHeader = "Signature-Agent"
+
+// unquoteSignatureAgent extracts the agent URL from a Signature-Agent
+// header value. A real WebBotAuth signer always sends an RFC 8941
+// sf-string — `"<url>"` (legacy) or `<label>="<url>"` (current,
+// RECOMMENDED) — so this strips a leading `<label>=` if present, then one
+// layer of surrounding double quotes. A value with no surrounding quotes
+// at all is passed through unchanged rather than rejected: it costs
+// nothing against a real signer (who always quotes), and it keeps this
+// package usable with a bare, unquoted URL as a robots.yes-internal
+// convenience — DeclaredVerifier in particular only uses this to extract
+// an opaque self-declared identifier, not to feed a signature check.
+// ok is false only for an empty value.
+func unquoteSignatureAgent(v string) (agentURL string, ok bool) {
+	if v == "" {
+		return "", false
+	}
+	if _, rest, found := strings.Cut(v, "="); found && strings.HasPrefix(rest, `"`) {
+		v = rest
+	}
+	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+		v = v[1 : len(v)-1]
+	}
+	return v, true
+}
 
 // DeclaredVerifier grants TierDeclared to any request carrying a
 // Signature-Agent header, without checking a signature — an unsigned,
@@ -60,7 +87,7 @@ const SignatureAgentHeader = "Signature-Agent"
 type DeclaredVerifier struct{}
 
 func (DeclaredVerifier) Verify(r *http.Request) Identity {
-	if id := r.Header.Get(SignatureAgentHeader); id != "" {
+	if id, ok := unquoteSignatureAgent(r.Header.Get(SignatureAgentHeader)); ok {
 		return Identity{Tier: TierDeclared, AgentID: id}
 	}
 	return Identity{Tier: TierUnverified}
