@@ -63,14 +63,15 @@ type Bundler struct {
 	MaxSitemapPages int
 	Client          *http.Client
 
-	mu            sync.Mutex
-	cached        []Page
-	builtAt       time.Time
-	building      bool
-	buildDone     chan struct{} // non-nil and open while a build is in flight
-	buildErr      error         // result of the most recent build that had a waiter
-	builds        metrics.Counter
-	buildFailures metrics.Counter
+	mu             sync.Mutex
+	cached         []Page
+	cachedManifest Manifest
+	builtAt        time.Time
+	building       bool
+	buildDone      chan struct{} // non-nil and open while a build is in flight
+	buildErr       error         // result of the most recent build that had a waiter
+	builds         metrics.Counter
+	buildFailures  metrics.Counter
 }
 
 // DefaultMaxSitemapPages caps how many sitemap-discovered paths one
@@ -147,6 +148,46 @@ func (b *Bundler) Bundle() ([]Page, error) {
 	return b.cached, b.buildErr
 }
 
+// Manifest returns the Manifest describing the currently cached bundle,
+// triggering the same build-or-refresh behavior as Bundle (see its doc
+// comment) since a manifest with no bundle behind it is meaningless. If
+// the bundle has never successfully built, Bundle's own error is
+// returned as-is and cachedManifest (still its zero value in that case)
+// is never touched — a caller must see the real failure, not an
+// empty-but-"successful" Manifest.
+//
+// A Manifest fetched via a separate request from the bundle can observe
+// a slightly newer background-refresh cycle than a concurrently
+// fetched bundle did. That's an inherent property of two independently
+// fetchable resources over a TTL-refreshed cache, already true of the
+// ndjson bundle today — not a new race, since cachedManifest is only
+// ever written in the same locked commit as cached (see
+// startBuildLocked), so whatever it currently holds always describes
+// some bundle state that was real at that commit point.
+func (b *Bundler) Manifest() (Manifest, error) {
+	if _, err := b.Bundle(); err != nil {
+		return Manifest{}, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cachedManifest, nil
+}
+
+// ServeManifest writes the current Manifest as JSON. Unlike ServeHTTP's
+// ndjson bundle, this is never gzipped — a manifest holds only metadata
+// (paths, hashes, sizes), not page content, so it's small enough that
+// plain encoding/json (matching serveDiscovery's style elsewhere in
+// this project) is the right level of ceremony.
+func (b *Bundler) ServeManifest(w http.ResponseWriter, r *http.Request) {
+	m, err := b.Manifest()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(m)
+}
+
 // startBuildLocked starts a rebuild in its own goroutine and returns the
 // channel that closes when it's done. Must be called with b.mu held;
 // b.building must be false. recordErr controls whether the build's error
@@ -168,6 +209,7 @@ func (b *Bundler) startBuildLocked(recordErr bool) chan struct{} {
 		if err == nil {
 			b.cached = pages
 			b.builtAt = time.Now()
+			b.cachedManifest = buildManifest(pages, b.builtAt, b.TTL)
 			b.builds.Inc()
 		}
 		b.mu.Unlock()

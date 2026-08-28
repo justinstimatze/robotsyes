@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Pillar 2 gained an export manifest: `/.well-known/robots-yes/export-manifest.json`
+  lists every bundled page's path, a `sha256:` content hash, and byte
+  size, plus one `bundle_hash` over the whole sorted set — so a
+  returning crawler can tell "did anything change" in a single request
+  instead of re-downloading and diffing the whole bundle, and a bot can
+  selectively fetch just the subtree it wants via the existing
+  content-negotiation route (pillar 1) rather than the whole bundle.
+
+  The design borrows directly from the Internet Archive's own
+  item-distribution pattern — its auto-generated `.torrent` files carry
+  exactly this per-file, per-hash structure via BitTorrent's multi-file
+  `info` dict, running in production, in the open, for the same
+  cache-economics reason this project cares about it (see HANDOFF.md's
+  "Pillar 2 extension" section). This ships only the plain-HTTP half of
+  that design: `internal/export.Bundler` gains `Manifest()`/
+  `ServeManifest`, built alongside the existing bundle in the same
+  rebuild cycle so the two can never drift apart. No config toggle —
+  the manifest is generated whenever a `Bundler` exists at all.
+
+  **Deliberately not shipped here:** a real `.torrent` (BitTorrent v1,
+  `anacrolix/torrent/metainfo`, BEP-19 web-seeding back to this proxy's
+  own content-negotiation route) — HANDOFF.md scopes that as a separate,
+  opt-in, TTL-gated follow-on with its own new dependency and config
+  surface, not silently folded into this pass.
+
 - Pillar 4 gained an optional paid-overflow tier: past a rate-limit
   tier's published ceiling, an operator can let a requester pay per
   over-ceiling request via **x402** (HTTP 402 + EIP-3009

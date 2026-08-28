@@ -26,6 +26,7 @@ import (
 const (
 	discoveryPath = "/.well-known/robots-yes.json"
 	exportPath    = "/.well-known/robots-yes/export.ndjson"
+	manifestPath  = "/.well-known/robots-yes/export-manifest.json"
 	llmsTxtPath   = "/llms.txt"
 
 	// paymentRequestTimeout bounds a Merchant.RequirePayment call. A
@@ -105,15 +106,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// not a bucket refill.
 	}
 
-	switch r.URL.Path {
-	case discoveryPath:
-		s.serveDiscovery(w, r)
-		return
-	case exportPath:
-		s.bundler.ServeHTTP(w, r)
-		return
-	case llmsTxtPath:
-		s.serveLLMsTxt(w, r)
+	if s.serveWellKnown(w, r) {
 		return
 	}
 
@@ -123,6 +116,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.upstream.ServeHTTP(w, r)
+}
+
+// serveWellKnown dispatches the "yes file" machine-readable paths
+// (discovery, bulk export, its manifest, llms.txt) and reports whether
+// it handled the request. Split out of ServeHTTP so this switch's own
+// branch count doesn't push the dispatcher itself over CodeScene's
+// complexity threshold as more well-known paths are added — it already
+// did once, adding manifestPath.
+func (s *Server) serveWellKnown(w http.ResponseWriter, r *http.Request) bool {
+	switch r.URL.Path {
+	case discoveryPath:
+		s.serveDiscovery(w, r)
+	case exportPath:
+		s.bundler.ServeHTTP(w, r)
+	case manifestPath:
+		s.bundler.ServeManifest(w, r)
+	case llmsTxtPath:
+		s.serveLLMsTxt(w, r)
+	default:
+		return false
+	}
+	return true
 }
 
 // wantsMarkdown decides whether to serve the stripped view. An explicit
@@ -286,6 +301,12 @@ type discoveryNegotiation struct {
 type discoveryExport struct {
 	URL    string `json:"url"`
 	Format string `json:"format"`
+	// ManifestURL points at the per-page hash/size listing (see
+	// internal/export.Manifest) — lets a bot detect an unchanged bundle
+	// in one comparison, or selectively fetch a subtree via the
+	// per-path content-negotiation route, instead of re-downloading and
+	// diffing the whole bundle on every crawl.
+	ManifestURL string `json:"manifest_url"`
 }
 
 type discoveryIdentity struct {
@@ -393,6 +414,7 @@ func (s *Server) serveLLMsTxt(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "negotiation, bulk export, and published rate limits keyed to identity.\n\n")
 	fmt.Fprintf(w, "- Discovery: %s\n", discoveryPath)
 	fmt.Fprintf(w, "- Bulk export: %s\n", exportPath)
+	fmt.Fprintf(w, "- Export manifest: %s\n", manifestPath)
 	fmt.Fprintf(w, "- Content negotiation: send `Accept: %s` on any page for a stripped view\n", negotiate.MarkdownType)
 }
 
@@ -405,8 +427,9 @@ func (s *Server) serveDiscovery(w http.ResponseWriter, r *http.Request) {
 			Vary:      "Accept",
 		},
 		Export: discoveryExport{
-			URL:    exportPath,
-			Format: "ndjson",
+			URL:         exportPath,
+			Format:      "ndjson",
+			ManifestURL: manifestPath,
 		},
 		Identity:   s.identityCapabilities(),
 		RateLimits: s.limiter.Published(),

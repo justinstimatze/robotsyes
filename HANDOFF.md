@@ -173,16 +173,119 @@ one deliberate design principle."
   request, no free tier implied." Noting this here as a grounded, verified SOTA fact for
   whenever the project decides whether to chase it, not as a decision already made.
 
+## Pillar 2 extension: export manifest + optional torrent distribution (design, 2026-08-28)
+
+Prompted by asking whether the torrent/P2P community has real prior art for bulk export —
+it does, and it's not hypothetical: Internet Archive runs it in production today. Verified
+live, not from memory: fetched a real IA item's `.torrent` file and it carries both a
+tracker `announce` (`bt1.archive.org:6969`) and a **BEP 19 web-seed** `url-list` pointing
+straight at `archive.org/download/...` — read in full, BEP 19 requires "no changes to
+trackers, HTTP, or FTP servers," the seed is just an existing HTTP URL a torrent client
+also knows how to hit. A multi-file torrent's `info.files` list — path, length, per-piece
+hash — is also exactly the shape needed to let a bot selectively fetch a subtree of a bulk
+export and verify it, independent of whether BitTorrent itself is in the picture at all.
+
+Two artifacts, generated together from the same per-page data the `Bundler` already builds
+each rebuild cycle, so they can never drift out of sync with each other or with the bundle
+they describe:
+
+### `export-manifest.json` — plain HTTP, no swarm required
+
+Published at `/.well-known/robots-yes/export-manifest.json`, pointed to from the discovery
+document's `export` block (`discoveryExport` gains a `manifest_url` field alongside the
+existing `url`/`format`).
+
+```json
+{
+  "generated_at": "2026-08-28T21:00:00Z",
+  "ttl_seconds": 300,
+  "count": 842,
+  "bundle_hash": "sha256:9f2c...",
+  "pages": [
+    {"path": "/blog/some-post", "hash": "sha256:1a2b...", "bytes": 4821}
+  ]
+}
+```
+
+- `hash` is `sha256:<hex>` (Docker/OCI digest convention, not torrent's raw binary — this
+  project's whole ethos is plain JSON over HTTP) over the exact UTF-8 bytes of that page's
+  `Page.Markdown` as cached in the bundle.
+- `bundle_hash` is one hash over the sorted `path`+`hash` pairs — the manifest-level
+  equivalent of a torrent's infohash. A returning crawler compares this ONE field against
+  what it saw last time; if it matches, the whole re-crawl is a single cheap request, no
+  per-page diffing needed. This is the actual fix for HANDOFF.md's own cited problem —
+  bots "bulk reading" an unchanged long tail every cycle.
+- Lets a bot fetch only the subtree it wants via the existing per-path content-negotiation
+  route (pillar 1) — no new serving code, `Bundler` just needs to also cache this struct
+  alongside `[]Page` in the same `rebuild()`/`startBuildLocked` cycle it already runs, so
+  bundle and manifest are always built from the same fetch pass.
+- No config toggle — generated whenever a `Bundler` exists at all; the compute cost is one
+  extra hash per already-fetched page.
+
+### `export.torrent` — real BitTorrent, opt-in, TTL-gated
+
+The pushback on dismissing this outright was right: the "swarm needs infrastructure"
+objection doesn't hold once BEP 19 is the mechanism — robots.yes never runs a tracker or a
+peer client, only ever the same role it already plays as a **web seed**. Peer discovery is
+either DHT (public, pre-existing, free) or omitted entirely; BEP 19 alone still leaves every
+non-BitTorrent bot on exactly today's plain-HTTP path, unaffected. Go tooling for this is
+real and current, not a green-field build: `github.com/anacrolix/torrent/metainfo`
+(confirmed live — 6.1k GitHub stars, MPL-2.0, pushed 2026-08-25) exports `Info`,
+`GeneratePieces`, `ChoosePieceLength`, and `MetaInfo` — everything needed to construct and
+piece-hash a `.torrent` without importing the library's full BitTorrent client/peer engine.
+
+Design:
+- One `Info.Files` entry per bundled page, `Path` set to the page's own URL path segments —
+  which means the existing pillar-1 markdown-negotiated route *is* the BEP-19 web seed
+  target, with no new serving code. `UrlList` points at an operator-configured public base
+  URL (see gap below).
+- Piece hashes are computed over the same bytes the manifest already hashes — so an
+  unchanged bundle regenerates the identical infohash automatically (deterministic content
+  hashing is BitTorrent's whole point); no special-casing needed to avoid needless swarm
+  churn on a quiet rebuild.
+- Published at `/.well-known/robots-yes/export.torrent`; `discoveryExport` gains a
+  `torrent_url` field, `omitempty` — absent entirely when the feature is off.
+
+**The real tradeoff, not glossed over:** a swarm only pays off if participants overlap in
+time on the same infohash long enough to actually share pieces with each other. A bundle
+rebuilt on a short TTL (minutes) regenerates a new infohash before a swarm can form at all —
+BEP 19's web seed ends up serving 100% of the traffic anyway, identical to plain HTTP, just
+with the .torrent as unused overhead. A long-TTL bundle (hours-to-daily — which matches what
+this pillar is actually for, long-tail content that doesn't change hour to hour) is where
+this can genuinely work, and that's the exact traffic Wikimedia's own postmortem blames for
+the bulk-export problem in the first place. Recommendation: `export.torrent.enabled: false`
+default (matches pillar 4's `payments.enabled` precedent — opt-in for a feature with a real
+cost/benefit tradeoff, not universally on); log a startup warning (not a hard block) if
+enabled with `TTL < 1h`, since that's the point past which swarm formation is unlikely to
+have time to matter.
+
+**Known gap, not yet solved:** `export.torrent`'s `UrlList` needs an internet-reachable
+HTTPS URL this proxy is actually served at — `cfg.Origin` is the *upstream* (private,
+usually loopback/internal) and `cfg.Addr` is a bind address (`:8080`), neither is a public
+URL. Config needs a new `export.torrent.public_url` field for this feature specifically;
+this is deliberately scoped narrow rather than adding a whole-`Config`-level public-URL
+concept other pillars don't currently need (pillars 1/3/4's discovery paths are all
+relative `.well-known/...`, self-referential only).
+
+Not yet implemented — this is the design, ready for a plan-mode pass when picked up.
+
 ## Open questions for prototyping
 
 - ~~Read the full "Towards an Agent-First Web" paper (not just the abstract) before
   designing around it — decide whether ATML overlaps with or diverges from the content-
   negotiation pillar above.~~ Done — see Confidence notes above.
-- Decide the actual deliverable shape: a spec doc (like llms.txt), a reference
-  implementation/library (like nothing that currently exists per the search above), or
-  both.
-- Pick a static-site/framework target for a first reference implementation — candidates
-  raised in conversation: something Next.js/Vercel-adjacent (content negotiation already
-  has a native pattern there) or a framework-agnostic middleware.
+- ~~Decide the actual deliverable shape.~~ Settled 2026-08-28: reference implementation
+  only, no separate spec doc, no second framework target yet. Every pillar so far has
+  chosen "wire-compatible with the real external spec" over inventing one (pillar 1 rides
+  plain Markdown/llms.txt, pillar 3 is wire-compatible with the actual IETF WebBotAuth
+  draft, pillar 4 rides x402) — the one piece robots.yes itself originates is pillar 2's
+  bulk-export bundle/manifest shape, small enough to document inline rather than spin out
+  as a formal spec artifact. HANDOFF.md's own "the gap" framing already says the unclaimed
+  niche is *connecting* existing pieces into one deployable proxy, not adding a seventh
+  competing spec to a field of six with "no convergence yet." A second framework target
+  (Next.js middleware, a Worker) is an adoption play worth building once there's a real ask
+  for it, not before the Go proxy — which already does all four pillars — has a single
+  user.
 - Register robotsyes.dev (and optionally .com) before prototyping publicly, given
-  availability is a live-query snapshot, not a hold.
+  availability is a live-query snapshot, not a hold. **Done 2026-08-28** — both registered
+  via Namecheap.

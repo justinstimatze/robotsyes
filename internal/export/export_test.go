@@ -3,6 +3,8 @@ package export
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -612,4 +614,250 @@ func TestBuildFailuresIncrementsOnFailedRebuild(t *testing.T) {
 	if b.BuildFailures() == 0 {
 		t.Fatal("expected BuildFailures() to increment once the origin started failing")
 	}
+}
+
+// TestBuildManifestComputesHashAndBytes is the base case: one page's
+// entry carries its own content hash and byte length, not some
+// derivative of the bundle as a whole.
+func TestBuildManifestComputesHashAndBytes(t *testing.T) {
+	pages := []Page{{Path: "/a", Markdown: "hello"}}
+	m := buildManifest(pages, time.Now(), time.Minute)
+	if len(m.Pages) != 1 {
+		t.Fatalf("got %d entries, want 1", len(m.Pages))
+	}
+	entry := m.Pages[0]
+	if entry.Path != "/a" {
+		t.Errorf("Path = %q, want %q", entry.Path, "/a")
+	}
+	if entry.Bytes != len("hello") {
+		t.Errorf("Bytes = %d, want %d", entry.Bytes, len("hello"))
+	}
+	wantSum := sha256.Sum256([]byte("hello"))
+	if want := "sha256:" + hex.EncodeToString(wantSum[:]); entry.Hash != want {
+		t.Errorf("Hash = %q, want %q", entry.Hash, want)
+	}
+	if m.Count != 1 {
+		t.Errorf("Count = %d, want 1", m.Count)
+	}
+	if !strings.HasPrefix(m.BundleHash, "sha256:") {
+		t.Errorf("BundleHash = %q, want a sha256: prefix", m.BundleHash)
+	}
+}
+
+// TestBuildManifestSortsEntriesByPath guards BundleHash's "one
+// comparison tells you nothing changed" property: without a stable
+// order, a sitemap re-emitting the same URLs differently would flip the
+// hash despite no content change.
+func TestBuildManifestSortsEntriesByPath(t *testing.T) {
+	pages := []Page{{Path: "/z", Markdown: "z"}, {Path: "/a", Markdown: "a"}, {Path: "/m", Markdown: "m"}}
+	m := buildManifest(pages, time.Now(), time.Minute)
+	got := make([]string, len(m.Pages))
+	for i, e := range m.Pages {
+		got[i] = e.Path
+	}
+	if want := []string{"/a", "/m", "/z"}; !equalPaths(got, want) {
+		t.Errorf("entry order = %v, want %v (sorted by path)", got, want)
+	}
+}
+
+// TestBuildManifestBundleHashStableAcrossBuiltAtAndTTL confirms
+// BundleHash is purely a function of page content — a rebuild that
+// changes nothing but the clock must not flip it.
+func TestBuildManifestBundleHashStableAcrossBuiltAtAndTTL(t *testing.T) {
+	pages := []Page{{Path: "/a", Markdown: "hello"}}
+	m1 := buildManifest(pages, time.Now(), time.Minute)
+	m2 := buildManifest(pages, time.Now().Add(time.Hour), 5*time.Minute)
+	if m1.BundleHash != m2.BundleHash {
+		t.Errorf("BundleHash changed with builtAt/ttl alone (%q vs %q) — it must depend only on page content", m1.BundleHash, m2.BundleHash)
+	}
+}
+
+// TestBuildManifestBundleHashChangesWithContent is the other half of the
+// stability guarantee: a real content change must actually be visible.
+func TestBuildManifestBundleHashChangesWithContent(t *testing.T) {
+	m1 := buildManifest([]Page{{Path: "/a", Markdown: "hello"}}, time.Now(), time.Minute)
+	m2 := buildManifest([]Page{{Path: "/a", Markdown: "goodbye"}}, time.Now(), time.Minute)
+	if m1.BundleHash == m2.BundleHash {
+		t.Error("BundleHash unchanged despite different page content")
+	}
+}
+
+// TestServeManifestWritesJSON is the HTTP-level check mirroring
+// TestServeHTTPPlainWithoutAcceptEncoding's shape for the bundle.
+func TestServeManifestWritesJSON(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/a", pageHandler("A"))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	b := NewBundler(BundlerConfig{Origin: srv.URL, Paths: []string{"/a"}, TTL: time.Minute})
+	req := httptest.NewRequest(http.MethodGet, "/manifest", nil)
+	w := httptest.NewRecorder()
+	b.ServeManifest(w, req)
+
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", got, "application/json")
+	}
+	var m Manifest
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatalf("response isn't valid JSON: %v", err)
+	}
+	if m.Count != 1 {
+		t.Errorf("Count = %d, want 1", m.Count)
+	}
+	if len(m.Pages) != 1 {
+		t.Fatalf("got %d entries, want 1", len(m.Pages))
+	}
+	if m.Pages[0].Path != "/a" {
+		t.Errorf("Pages[0].Path = %q, want %q", m.Pages[0].Path, "/a")
+	}
+}
+
+// TestManifestFirstBuildFailurePropagatesToCaller mirrors
+// TestBundleFirstBuildFailurePropagatesToCaller: with no prior
+// successful build, Manifest() must surface Bundle()'s own error rather
+// than a misleadingly-"successful" zero-value Manifest.
+func TestManifestFirstBuildFailurePropagatesToCaller(t *testing.T) {
+	srv := httptest.NewServer(http.NewServeMux()) // no handlers -> 404 for everything
+	t.Cleanup(srv.Close)
+
+	b := NewBundler(BundlerConfig{Origin: srv.URL, Paths: []string{"/missing"}, TTL: time.Minute})
+	m, err := b.Manifest()
+	if err == nil {
+		t.Fatal("expected the first-ever build's failure to reach the caller, got none")
+	}
+	if m.Count != 0 || m.Pages != nil {
+		t.Errorf("expected a zero-value Manifest alongside the error, got %+v", m)
+	}
+}
+
+// TestManifestServesStaleWhileRebuildingInBackground mirrors
+// TestBundleServesStaleWhileRebuildingInBackground: Manifest() during a
+// stale window must return the last-good BundleHash immediately, not
+// block behind an in-flight background rebuild.
+func TestManifestServesStaleWhileRebuildingInBackground(t *testing.T) {
+	var version, hits int32
+	version = 1
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/a", func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&hits, 1) > 1 {
+			<-release // every fetch after the first (the background rebuild) blocks
+		}
+		fmt.Fprintf(w, "<html><body><main><h1>v%d</h1></main></body></html>", atomic.LoadInt32(&version))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	b := NewBundler(BundlerConfig{Origin: srv.URL, Paths: []string{"/a"}, TTL: 10 * time.Millisecond})
+	m1, err := b.Manifest()
+	if err != nil {
+		t.Fatalf("first Manifest: %v", err)
+	}
+	staleHash := m1.BundleHash
+
+	time.Sleep(20 * time.Millisecond) // past TTL
+	atomic.StoreInt32(&version, 2)
+
+	assertManifestRespondsInstantly(t, b, staleHash)
+
+	close(release)
+	assertManifestEventuallyChanges(t, b, staleHash)
+}
+
+// assertManifestRespondsInstantly proves Manifest() doesn't block behind
+// an in-flight background rebuild: it must return the stale BundleHash
+// within the timeout, not hang until the rebuild (blocked on release)
+// finishes.
+func assertManifestRespondsInstantly(t *testing.T, b *Bundler, staleHash string) {
+	t.Helper()
+	done := make(chan Manifest, 1)
+	go func() {
+		// t.Errorf, not Fatalf: FailNow is documented as unsafe from a
+		// goroutine other than the test's own — this closure runs in one.
+		m, err := b.Manifest()
+		if err != nil {
+			t.Errorf("stale-window Manifest: %v", err)
+		}
+		done <- m
+	}()
+	select {
+	case m := <-done:
+		if m.BundleHash != staleHash {
+			t.Errorf("BundleHash = %q during the stale window, want unchanged %q", m.BundleHash, staleHash)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Manifest() blocked instead of returning the stale manifest immediately")
+	}
+}
+
+// assertManifestEventuallyChanges polls until the background rebuild's
+// manifest lands (a BundleHash different from staleHash), within a
+// generous safety deadline.
+func assertManifestEventuallyChanges(t *testing.T, b *Bundler, staleHash string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		m, err := b.Manifest()
+		if err == nil && m.BundleHash != staleHash {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("background rebuild's manifest never landed")
+}
+
+// TestManifestPreviousResultUnaffectedByLaterRebuild is the regression
+// test for buildManifest's fresh-slice invariant: if a rebuild reused or
+// mutated a previous call's backing array, a Manifest returned before
+// the rebuild would silently change out from under its caller once the
+// rebuild landed.
+func TestManifestPreviousResultUnaffectedByLaterRebuild(t *testing.T) {
+	var version int32 = 1
+	mux := http.NewServeMux()
+	mux.HandleFunc("/a", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "<html><body><main><h1>v%d</h1></main></body></html>", atomic.LoadInt32(&version))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	b := NewBundler(BundlerConfig{Origin: srv.URL, Paths: []string{"/a"}, TTL: 10 * time.Millisecond})
+	m1, err := b.Manifest()
+	if err != nil {
+		t.Fatalf("first Manifest: %v", err)
+	}
+	if len(m1.Pages) != 1 {
+		t.Fatalf("got %d entries, want 1", len(m1.Pages))
+	}
+	firstHash := m1.Pages[0].Hash
+
+	atomic.StoreInt32(&version, 2)
+	time.Sleep(20 * time.Millisecond) // past TTL
+	waitForManifestEntryHashChange(t, b, firstHash)
+
+	if m1.Pages[0].Hash != firstHash {
+		t.Errorf("a previously-returned Manifest's entry was mutated by a later rebuild: got %q, want unchanged %q", m1.Pages[0].Hash, firstHash)
+	}
+}
+
+// waitForManifestEntryHashChange polls until a rebuild lands a manifest
+// whose first entry's hash differs from from, within a generous safety
+// deadline — the trigger TestManifestPreviousResultUnaffectedByLaterRebuild
+// needs before it can check whether a Manifest captured before the
+// rebuild was mutated by it.
+func waitForManifestEntryHashChange(t *testing.T, b *Bundler, from string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		m, err := b.Manifest()
+		if err != nil || len(m.Pages) != 1 {
+			time.Sleep(5 * time.Millisecond)
+			continue
+		}
+		if m.Pages[0].Hash != from {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("background rebuild never landed a changed manifest")
 }

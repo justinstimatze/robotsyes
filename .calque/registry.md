@@ -760,3 +760,99 @@ Verdicts:
   paymentCredential's caller; the tests exercise paymentCredential's
   header-precedence logic directly.
 - reviewed: 2026-08-28
+
+<!-- pillar-2 export manifest (internal/export/manifest.go + Bundler.Manifest/
+     ServeManifest, internal/proxy's manifestPath route). Same shapes as the
+     pillar-4 batch above: sibling HTTP handlers, caller/callee decomposition,
+     function-and-its-own-test. -->
+
+## 69 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeManifest | internal/proxy/proxy.go::Server.handleRateLimited
+- signal: shared-strings=2; shared-calls=4
+- verdict: false-alarm
+- policy: none
+- note: coincidental "writes an HTTP response" overlap between unrelated
+  handlers — same shape as #10/#11/#25/#31. Covers #69-#73 (ServeManifest
+  vs. handleRateLimited/serveDiscovery/serveMarkdown/writeRateLimited/
+  serveLLMsTxt).
+- reviewed: 2026-08-28
+
+## 70 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeManifest | internal/proxy/proxy.go::Server.serveDiscovery
+- verdict: false-alarm
+- policy: none
+- note: see #69.
+- reviewed: 2026-08-28
+
+## 71 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeManifest | internal/proxy/proxy.go::Server.serveMarkdown
+- verdict: false-alarm
+- policy: none
+- note: see #69.
+- reviewed: 2026-08-28
+
+## 72 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeManifest | internal/proxy/proxy.go::Server.writeRateLimited
+- verdict: false-alarm
+- policy: none
+- note: see #69.
+- reviewed: 2026-08-28
+
+## 73 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeManifest | internal/proxy/proxy.go::Server.serveLLMsTxt
+- verdict: false-alarm
+- policy: none
+- note: see #69.
+- reviewed: 2026-08-28
+
+## 74 — false-alarm
+- pair: internal/export/export.go::Bundler.Manifest | internal/export/manifest.go::buildManifest
+- signal: name~1.00(manifest)
+- verdict: false-alarm
+- policy: none
+- note: caller/callee — Manifest() (via startBuildLocked) is buildManifest's
+  only caller. Same decomposition shape as #9.
+- reviewed: 2026-08-28
+
+## 75 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeManifest | internal/export/export_test.go::TestServeManifestWritesJSON
+- verdict: false-alarm
+- policy: none
+- note: a function and its own direct test — same shape as #13. Covers #75
+  and #77 (the export_test.go and proxy_test.go tests).
+- reviewed: 2026-08-28
+
+## 76 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeManifest | internal/export/export.go::Bundler.ServeHTTP
+- signal: shared-calls=5; name~0.33(serve); shared-strings=1; same-receiver
+- verdict: false-alarm
+- policy: none
+- note: sibling handlers on the same Bundler — same shape as #10/#15/#16.
+- reviewed: 2026-08-28
+
+## 77 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeManifest | internal/proxy/proxy_test.go::TestExportManifestEndpointServesManifest
+- verdict: false-alarm
+- policy: none
+- note: see #75 — the end-to-end route test exercises ServeManifest
+  through Server.ServeHTTP's dispatch.
+- reviewed: 2026-08-28
+
+## 78 — false-alarm
+- pair: internal/export/export_test.go::TestServeManifestWritesJSON | internal/proxy/proxy.go::Server.serveDiscovery
+- verdict: false-alarm
+- policy: none
+- note: coincidental weak overlap, same shape as #10/#11.
+- reviewed: 2026-08-28
+
+## C5 — false-alarm
+- cluster: internal/export/export.go::Bundler.startBuildLocked | internal/export/export_test.go::TestBuildManifestBundleHashChangesWithContent | internal/export/export_test.go::TestBuildManifestBundleHashStableAcrossBuiltAtAndTTL | internal/export/export_test.go::TestBuildManifestComputesHashAndBytes | internal/export/export_test.go::TestBuildManifestSortsEntriesByPath
+- signal: shared seam(s): hello, buildManifest
+- verdict: false-alarm
+- policy: none
+- note: startBuildLocked is buildManifest's only production caller, swept
+  in only because it shares the token "buildManifest"; the four tests
+  call buildManifest directly (unit-level, no Bundler) and happen to
+  share the fixture literal "hello" as sample page content — same
+  function-and-its-own-tests shape as #13, not duplication.
+- reviewed: 2026-08-28

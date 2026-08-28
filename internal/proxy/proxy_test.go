@@ -266,8 +266,35 @@ func TestDiscoveryDocument(t *testing.T) {
 	if doc.Export.URL != exportPath {
 		t.Errorf("export.url = %q, want %q", doc.Export.URL, exportPath)
 	}
+	if doc.Export.ManifestURL != manifestPath {
+		t.Errorf("export.manifest_url = %q, want %q", doc.Export.ManifestURL, manifestPath)
+	}
 	if _, ok := doc.RateLimits["declared"]; !ok {
 		t.Errorf("expected a declared tier in published rate limits, got %v", doc.RateLimits)
+	}
+}
+
+// TestExportManifestEndpointServesManifest confirms the new route is
+// actually wired into ServeHTTP's dispatch, not just the discovery
+// document that points at it.
+func TestExportManifestEndpointServesManifest(t *testing.T) {
+	s := newTestServer(t, nil)
+	req := httptest.NewRequest(http.MethodGet, manifestPath, nil)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+	var m export.Manifest
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatalf("decoding manifest: %v", err)
+	}
+	if m.Count != 2 {
+		t.Errorf("manifest.count = %d, want 2 (matching newTestServer's configured paths)", m.Count)
 	}
 }
 
