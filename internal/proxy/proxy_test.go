@@ -269,8 +269,65 @@ func TestDiscoveryDocument(t *testing.T) {
 	if doc.Export.ManifestURL != manifestPath {
 		t.Errorf("export.manifest_url = %q, want %q", doc.Export.ManifestURL, manifestPath)
 	}
+	if doc.Export.TorrentURL != "" {
+		t.Errorf("export.torrent_url = %q, want empty (torrent not configured)", doc.Export.TorrentURL)
+	}
 	if _, ok := doc.RateLimits["declared"]; !ok {
 		t.Errorf("expected a declared tier in published rate limits, got %v", doc.RateLimits)
+	}
+}
+
+// TestDiscoveryDocumentTorrentURLWhenEnabled mirrors paymentsCapabilities'
+// own rule (never advertise a capability the running server can't back)
+// for the torrent route specifically.
+func TestDiscoveryDocumentTorrentURLWhenEnabled(t *testing.T) {
+	s := newTestServer(t, func(cfg *config.Config) {
+		cfg.Export.Torrent.Enabled = true
+		cfg.Export.Torrent.PublicURL = "https://example.com"
+	})
+	req := httptest.NewRequest(http.MethodGet, discoveryPath, nil)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	var doc discovery
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decoding discovery doc: %v", err)
+	}
+	if doc.Export.TorrentURL != torrentPath {
+		t.Errorf("export.torrent_url = %q, want %q", doc.Export.TorrentURL, torrentPath)
+	}
+}
+
+// TestExportTorrentEndpointsServeThroughServeHTTP confirms both new
+// routes — the .torrent itself and the BEP-19 web-seed prefix — are
+// actually wired into ServeHTTP's dispatch, not just constructed in
+// isolation the way the internal/export tests already cover.
+func TestExportTorrentEndpointsServeThroughServeHTTP(t *testing.T) {
+	s := newTestServer(t, func(cfg *config.Config) {
+		cfg.Export.Torrent.Enabled = true
+		cfg.Export.Torrent.PublicURL = "https://example.com"
+	})
+
+	req := httptest.NewRequest(http.MethodGet, torrentPath, nil)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET %s: status = %d, want 200", torrentPath, w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/x-bittorrent" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/x-bittorrent")
+	}
+
+	// newTestServer's origin bundles "/" and "/about" — pathToSeedKey
+	// turns root into "index".
+	seedReq := httptest.NewRequest(http.MethodGet, torrentSeedPrefix+"pages/index", nil)
+	seedW := httptest.NewRecorder()
+	s.ServeHTTP(seedW, seedReq)
+	if seedW.Code != http.StatusOK {
+		t.Fatalf("GET %spages/index: status = %d, want 200", torrentSeedPrefix, seedW.Code)
+	}
+	if seedW.Body.Len() == 0 {
+		t.Error("seed route returned an empty body")
 	}
 }
 

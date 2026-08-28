@@ -856,3 +856,74 @@ Verdicts:
   share the fixture literal "hello" as sample page content — same
   function-and-its-own-tests shape as #13, not duplication.
 - reviewed: 2026-08-28
+
+## 79 — false-alarm
+- pair: internal/export/torrent.go::pathToSeedKey | internal/export/torrent_test.go::TestPathToSeedKey
+- signal: name~0.75(key+path+seed); shared-strings=1
+- verdict: false-alarm
+- policy: none
+- note: a function and its own direct test — same shape as #13.
+- reviewed: 2026-08-28
+
+## 80 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeManifest | internal/export/export.go::Bundler.ServeTorrent
+- signal: shared-strings=1; name~0.33(serve); shared-calls=3; same-receiver
+- verdict: false-alarm
+- policy: none
+- note: sibling handlers on the same Bundler — same shape as #10/#15/#16/#76.
+- reviewed: 2026-08-28
+
+## 81 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeTorrent | internal/proxy/proxy.go::Server.serveMarkdown
+- signal: shared-strings=1; name~0.33(serve); shared-calls=4
+- verdict: false-alarm
+- policy: none
+- note: coincidental weak overlap on "serve" plus both writing an HTTP
+  response body — same shape as #10/#11/#78.
+- reviewed: 2026-08-28
+
+## 82 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeTorrent | internal/export/export.go::Bundler.ServeTorrentSeed
+- signal: name~0.67(serve+torrent); shared-calls=3; same-receiver
+- verdict: false-alarm
+- policy: none
+- note: sibling handlers on the same Bundler, same shape as #80 — one
+  serves the .torrent itself, the other the BEP-19 web-seed content; not
+  a dual-path pair, they serve genuinely different resources.
+- reviewed: 2026-08-28
+
+## 83 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeTorrent | internal/export/torrent_test.go::TestServeTorrentWritesParsableTorrent
+- verdict: false-alarm
+- policy: none
+- note: a function and its own direct test — same shape as #13/#75/#79.
+- reviewed: 2026-08-28
+
+## 84 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeTorrent | internal/proxy/proxy.go::Server.serveDiscovery
+- signal: name~0.33(serve); shared-strings=1; shared-calls=2
+- verdict: false-alarm
+- policy: none
+- note: coincidental weak overlap, same shape as #10/#11/#78/#81.
+- reviewed: 2026-08-28
+
+## 85 — false-alarm
+- pair: internal/export/export.go::Bundler.ServeTorrent | internal/export/export.go::Bundler.ServeHTTP
+- signal: name~0.33(serve); shared-calls=4; shared-strings=1; same-receiver
+- verdict: false-alarm
+- policy: none
+- note: sibling handlers on the same Bundler — same shape as #80/#82.
+- reviewed: 2026-08-28
+
+## C6 — false-alarm
+- cluster: internal/export/export.go::Bundler.buildTorrentLocked | internal/export/torrent_test.go::TestBuildTorrentInfoInfohashChangesWithContent | internal/export/torrent_test.go::TestBuildTorrentInfoInfohashStableAcrossCalls | internal/export/torrent_test.go::TestBuildTorrentInfoSkipsSeedKeyCollision | internal/export/torrent_test.go::TestBuildTorrentInfoWrapsTrackersAsOneTier | internal/export/torrent_test.go::parseTestTorrent
+- signal: shared seam(s): infohashOf, buildTorrentInfo
+- verdict: false-alarm
+- policy: none
+- note: buildTorrentLocked is buildTorrentInfo's only production caller,
+  swept in only because it shares that token; the test-side members are
+  parseTestTorrent (a shared test helper, see its own doc comment) and
+  four tests that all call buildTorrentInfo/parseTestTorrent directly
+  (unit-level, no Bundler) — same function-and-its-own-tests shape as
+  C5, not duplication.
+- reviewed: 2026-08-28

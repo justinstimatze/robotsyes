@@ -91,6 +91,7 @@ func cmdServe(args []string) {
 	_ = fs.Parse(args)
 
 	cfg := loadConfig(*configPath)
+	warnIfTorrentTTLTooShort(cfg)
 
 	cards := identity.NewCardFetcher(5*time.Minute, identity.DefaultMaxCardCacheEntries)
 	verifier := identity.NewSignedVerifier(cards)
@@ -116,6 +117,22 @@ func loadConfig(path string) config.Config {
 		log.Fatalf("robotsyes: %v", err)
 	}
 	return cfg
+}
+
+// minTorrentTTLSeconds is the point past which HANDOFF.md's own design
+// section judges a swarm unlikely to have time to form before a rebuild
+// regenerates the bundle's infohash — below it, export.torrent still
+// works as a pure BEP-19 web seed, just with none of a swarm's benefit.
+// Not enforced; an operator may have reasons to accept that tradeoff.
+const minTorrentTTLSeconds = 3600
+
+// warnIfTorrentTTLTooShort logs, but doesn't block startup on, a
+// torrent-enabled config whose TTL is short enough that a swarm has
+// essentially no chance to form.
+func warnIfTorrentTTLTooShort(cfg config.Config) {
+	if cfg.Export.Torrent.Enabled && cfg.Export.TTLSeconds < minTorrentTTLSeconds {
+		log.Printf("robotsyes: export.torrent.enabled with ttl_seconds=%d (<%d) — a swarm is unlikely to form before the infohash changes; the .torrent still works as a plain web seed", cfg.Export.TTLSeconds, minTorrentTTLSeconds)
+	}
 }
 
 // buildMerchant returns nil when payments are disabled — proxy.New

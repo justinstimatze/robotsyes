@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Pillar 2 gained a real, opt-in `.torrent` distribution:
+  `/.well-known/robots-yes/export.torrent`, a v1 (BEP 3) multi-file torrent
+  whose pieces are the same bundled pages the manifest already hashes,
+  BEP-19 web-seeded back to a new route on this server —
+  `/.well-known/robots-yes/torrent-seed/` — so a swarm can form for
+  long-tail content without robots.yes ever running a tracker, DHT node,
+  or peer client. Off by default (`export.torrent.enabled`); requires
+  `export.torrent.public_url`, the internet-reachable base this proxy is
+  actually served at, since neither the configured origin nor the bind
+  address is one. A startup warning (not a hard block) fires when enabled
+  with a bundle TTL under an hour, since a bundle that regenerates its
+  infohash faster than a swarm can form gets none of the benefit over
+  plain HTTP.
+
+  This is the second half of the design HANDOFF.md's "Pillar 2 extension"
+  section credited to the Internet Archive's own production pattern —
+  and it corrects one thing that section got wrong: a BEP-19 web-seed
+  fetch is a plain `GET` with no `Accept` header, so pointing it at
+  pillar 1's *content-negotiated* markdown route (the original plan)
+  would have handed a torrent client the full HTML page instead of the
+  markdown its piece hashes were computed over, silently corrupting the
+  swarm. The new seed route serves each page's exact cached markdown
+  unconditionally instead — one new dispatch path, still no new
+  fetching. Adds one new dependency, `github.com/anacrolix/torrent`
+  (`metainfo`/`bencode` subpackages only — not the full BitTorrent
+  client/peer engine).
+
 - Pillar 2 gained an export manifest: `/.well-known/robots-yes/export-manifest.json`
   lists every bundled page's path, a `sha256:` content hash, and byte
   size, plus one `bundle_hash` over the whole sorted set — so a
@@ -21,11 +48,10 @@
   rebuild cycle so the two can never drift apart. No config toggle —
   the manifest is generated whenever a `Bundler` exists at all.
 
-  **Deliberately not shipped here:** a real `.torrent` (BitTorrent v1,
-  `anacrolix/torrent/metainfo`, BEP-19 web-seeding back to this proxy's
-  own content-negotiation route) — HANDOFF.md scopes that as a separate,
-  opt-in, TTL-gated follow-on with its own new dependency and config
-  surface, not silently folded into this pass.
+  **Not shipped in this entry** (see the real `.torrent` entry above,
+  shipped in the same release): BitTorrent v1 web-seeding, scoped at the
+  time as a separate, opt-in, TTL-gated follow-on with its own new
+  dependency and config surface.
 
 - Pillar 4 gained an optional paid-overflow tier: past a rate-limit
   tier's published ceiling, an operator can let a requester pay per

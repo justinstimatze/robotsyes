@@ -65,6 +65,34 @@ type ExportConfig struct {
 	// MaxSitemapPages caps how many paths SitemapURL can contribute to
 	// one bundle. Zero means export.DefaultMaxSitemapPages.
 	MaxSitemapPages int `yaml:"max_sitemap_pages"`
+	// Torrent configures the optional real-BitTorrent distribution of the
+	// bundle (a BEP-19 web-seeded .torrent) alongside the plain-HTTP
+	// manifest. Off by default — see TorrentConfig.
+	Torrent TorrentConfig `yaml:"torrent"`
+}
+
+// TorrentConfig configures pillar 2's optional real-.torrent distribution:
+// a multi-file .torrent whose pieces are the same bundled pages the
+// manifest already hashes, web-seeded (BEP 19) back to this server so a
+// swarm can form without robots.yes ever running a tracker or peer
+// client.
+type TorrentConfig struct {
+	// Enabled turns on the .torrent and web-seed routes. Hard default
+	// false — matches PaymentsConfig's precedent for an opt-in feature
+	// with a real cost/benefit tradeoff, not something turned on by
+	// inference.
+	Enabled bool `yaml:"enabled"`
+	// PublicURL is the internet-reachable HTTPS base this proxy is
+	// actually served at. Required when Enabled: Origin is the private
+	// upstream and Addr is a bind address — neither is a public URL, and
+	// BEP 19's web-seed list needs one a torrent client can actually
+	// reach.
+	PublicURL string `yaml:"public_url"`
+	// Trackers are optional extra announce URLs. Unset is a legitimate,
+	// fully-supported configuration — BEP 19 web-seeding plus DHT (on by
+	// default; this project never sets Info.Private, which is the only
+	// thing that turns DHT off) needs no tracker at all.
+	Trackers []string `yaml:"trackers,omitempty"`
 }
 
 // Default returns a Config with every field a runnable prototype needs,
@@ -98,6 +126,9 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Origin == "" {
 		return Config{}, fmt.Errorf("%s: origin is required", path)
+	}
+	if cfg.Export.Torrent.Enabled && cfg.Export.Torrent.PublicURL == "" {
+		return Config{}, fmt.Errorf("%s: export.torrent.public_url is required when export.torrent.enabled", path)
 	}
 	return cfg, nil
 }

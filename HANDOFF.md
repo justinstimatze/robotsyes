@@ -224,6 +224,16 @@ existing `url`/`format`).
 
 ### `export.torrent` — real BitTorrent, opt-in, TTL-gated
 
+**Implemented** (see CHANGELOG.md's "Unreleased" entry) — with one correction to the
+design as originally written just below: the web-seed target is a **new**,
+always-unconditional route (`/.well-known/robots-yes/torrent-seed/`), not the existing
+pillar-1 negotiated markdown route this section originally proposed. A BEP-19 web-seed
+`GET` carries no `Accept` header, so a plain GET against the negotiated route would have
+returned full HTML to a torrent client — bytes that don't match the piece hashes
+computed over `Page.Markdown` — silently corrupting the swarm. Caught during plan-check's
+own verification pass, before any of this shipped, by reading BEP 19 itself rather than
+trusting this section's earlier claim. The rest of the design below held up as written.
+
 The pushback on dismissing this outright was right: the "swarm needs infrastructure"
 objection doesn't hold once BEP 19 is the mechanism — robots.yes never runs a tracker or a
 peer client, only ever the same role it already plays as a **web seed**. Peer discovery is
@@ -235,10 +245,12 @@ real and current, not a green-field build: `github.com/anacrolix/torrent/metainf
 piece-hash a `.torrent` without importing the library's full BitTorrent client/peer engine.
 
 Design:
-- One `Info.Files` entry per bundled page, `Path` set to the page's own URL path segments —
-  which means the existing pillar-1 markdown-negotiated route *is* the BEP-19 web seed
-  target, with no new serving code. `UrlList` points at an operator-configured public base
-  URL (see gap below).
+- One `Info.Files` entry per bundled page, `Path` set to the page's own URL path segments.
+  `UrlList` points at a new, always-unconditional web-seed route on this same server
+  (`/.well-known/robots-yes/torrent-seed/`) serving each page's exact cached markdown with
+  no content negotiation — *not* the existing pillar-1 negotiated route (see the correction
+  note above this section). `UrlList`'s base is an operator-configured public base URL (see
+  gap below), joined with that seed-route prefix.
 - Piece hashes are computed over the same bytes the manifest already hashes — so an
   unchanged bundle regenerates the identical infohash automatically (deterministic content
   hashing is BitTorrent's whole point); no special-casing needed to avoid needless swarm
@@ -259,15 +271,13 @@ cost/benefit tradeoff, not universally on); log a startup warning (not a hard bl
 enabled with `TTL < 1h`, since that's the point past which swarm formation is unlikely to
 have time to matter.
 
-**Known gap, not yet solved:** `export.torrent`'s `UrlList` needs an internet-reachable
-HTTPS URL this proxy is actually served at — `cfg.Origin` is the *upstream* (private,
-usually loopback/internal) and `cfg.Addr` is a bind address (`:8080`), neither is a public
-URL. Config needs a new `export.torrent.public_url` field for this feature specifically;
-this is deliberately scoped narrow rather than adding a whole-`Config`-level public-URL
-concept other pillars don't currently need (pillars 1/3/4's discovery paths are all
+**Gap, now solved:** `export.torrent`'s `UrlList` needs an internet-reachable HTTPS URL this
+proxy is actually served at — `cfg.Origin` is the *upstream* (private, usually
+loopback/internal) and `cfg.Addr` is a bind address (`:8080`), neither is a public URL.
+Solved with `export.torrent.public_url`, required (`config.Load` fails fast otherwise) when
+`export.torrent.enabled`; deliberately scoped narrow rather than a whole-`Config`-level
+public-URL concept other pillars don't need (pillars 1/3/4's discovery paths are all
 relative `.well-known/...`, self-referential only).
-
-Not yet implemented — this is the design, ready for a plan-mode pass when picked up.
 
 ## Open questions for prototyping
 

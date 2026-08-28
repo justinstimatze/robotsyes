@@ -50,28 +50,42 @@ type BundlerConfig struct {
 	// MaxSitemapPages caps how many paths SitemapURL can contribute to
 	// one bundle. Zero means DefaultMaxSitemapPages.
 	MaxSitemapPages int
+	// TorrentEnabled turns on building a real .torrent (see torrent.go)
+	// alongside the manifest on every rebuild. TorrentSeedBaseURL must be
+	// set when true — it's the full, already-joined web-seed URL
+	// (operator's public_url plus proxy.go's torrentSeedPrefix); this
+	// package never references that constant itself, since
+	// internal/proxy owns every well-known-path constant.
+	TorrentEnabled     bool
+	TorrentSeedBaseURL string
+	TorrentTrackers    []string
 }
 
 // Bundler fetches Paths (and, if configured, sitemap-discovered paths)
 // from Origin, strips each via negotiate.Strip, and caches the resulting
 // bundle for TTL before rebuilding.
 type Bundler struct {
-	Origin          string
-	Paths           []string
-	TTL             time.Duration
-	SitemapURL      string
-	MaxSitemapPages int
-	Client          *http.Client
+	Origin             string
+	Paths              []string
+	TTL                time.Duration
+	SitemapURL         string
+	MaxSitemapPages    int
+	TorrentEnabled     bool
+	TorrentSeedBaseURL string
+	TorrentTrackers    []string
+	Client             *http.Client
 
-	mu             sync.Mutex
-	cached         []Page
-	cachedManifest Manifest
-	builtAt        time.Time
-	building       bool
-	buildDone      chan struct{} // non-nil and open while a build is in flight
-	buildErr       error         // result of the most recent build that had a waiter
-	builds         metrics.Counter
-	buildFailures  metrics.Counter
+	mu              sync.Mutex
+	cached          []Page
+	cachedManifest  Manifest
+	cachedTorrent   []byte
+	cachedSeedIndex map[string]Page
+	builtAt         time.Time
+	building        bool
+	buildDone       chan struct{} // non-nil and open while a build is in flight
+	buildErr        error         // result of the most recent build that had a waiter
+	builds          metrics.Counter
+	buildFailures   metrics.Counter
 }
 
 // DefaultMaxSitemapPages caps how many sitemap-discovered paths one
@@ -86,12 +100,15 @@ func NewBundler(cfg BundlerConfig) *Bundler {
 		maxPages = DefaultMaxSitemapPages
 	}
 	return &Bundler{
-		Origin:          cfg.Origin,
-		Paths:           cfg.Paths,
-		TTL:             cfg.TTL,
-		SitemapURL:      cfg.SitemapURL,
-		MaxSitemapPages: maxPages,
-		Client:          &http.Client{Timeout: 10 * time.Second},
+		Origin:             cfg.Origin,
+		Paths:              cfg.Paths,
+		TTL:                cfg.TTL,
+		SitemapURL:         cfg.SitemapURL,
+		MaxSitemapPages:    maxPages,
+		TorrentEnabled:     cfg.TorrentEnabled,
+		TorrentSeedBaseURL: cfg.TorrentSeedBaseURL,
+		TorrentTrackers:    cfg.TorrentTrackers,
+		Client:             &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -188,6 +205,55 @@ func (b *Bundler) ServeManifest(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(m)
 }
 
+// ServeTorrent writes the current .torrent, bencoded and ready for a
+// BitTorrent client. Not found when the feature is disabled, or when it's
+// enabled but no build has ever succeeded — never serves a stale or
+// empty-but-"successful" .torrent.
+func (b *Bundler) ServeTorrent(w http.ResponseWriter, r *http.Request) {
+	if !b.TorrentEnabled {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := b.Bundle(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	b.mu.Lock()
+	encoded := b.cachedTorrent
+	b.mu.Unlock()
+	if encoded == nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-bittorrent")
+	_, _ = w.Write(encoded)
+}
+
+// ServeTorrentSeed is the BEP-19 web-seed target: seedPath is the
+// request path with proxy.go's torrentSeedPrefix already stripped (e.g.
+// "pages/blog/some-post"). It serves the exact cached Page.Markdown
+// bytes for the page that path names, unconditionally — no content
+// negotiation — so what's served is always byte-for-byte what the
+// .torrent's piece hashes were computed over. http.ServeContent handles
+// Range requests natively, which is what a real BEP-19 client needs for
+// partial-piece fetches.
+func (b *Bundler) ServeTorrentSeed(w http.ResponseWriter, r *http.Request, seedPath string) {
+	if !b.TorrentEnabled {
+		http.NotFound(w, r)
+		return
+	}
+	key := strings.TrimPrefix(seedPath, torrentInfoName+"/")
+	b.mu.Lock()
+	page, ok := b.cachedSeedIndex[key]
+	modTime := b.builtAt
+	b.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeContent(w, r, key, modTime, strings.NewReader(page.Markdown))
+}
+
 // startBuildLocked starts a rebuild in its own goroutine and returns the
 // channel that closes when it's done. Must be called with b.mu held;
 // b.building must be false. recordErr controls whether the build's error
@@ -210,12 +276,33 @@ func (b *Bundler) startBuildLocked(recordErr bool) chan struct{} {
 			b.cached = pages
 			b.builtAt = time.Now()
 			b.cachedManifest = buildManifest(pages, b.builtAt, b.TTL)
+			if b.TorrentEnabled {
+				b.buildTorrentLocked(pages)
+			}
 			b.builds.Inc()
 		}
 		b.mu.Unlock()
 		close(done)
 	}()
 	return done
+}
+
+// buildTorrentLocked builds a fresh .torrent and seed index from pages
+// and commits them, replacing b.cachedTorrent/b.cachedSeedIndex wholesale
+// (never mutating the previous map — see buildTorrentInfo's doc comment
+// for why that matters to a concurrent ServeTorrentSeed reader). Must be
+// called with b.mu held. A build failure here is logged and leaves the
+// previous cached torrent in place — the same "a bad rebuild doesn't
+// blow away a good stale cache" property Bundle() already has for the
+// ndjson bundle, not a new behavior.
+func (b *Bundler) buildTorrentLocked(pages []Page) {
+	encoded, seedIndex, err := buildTorrentInfo(pages, b.TorrentSeedBaseURL, b.TorrentTrackers)
+	if err != nil {
+		log.Printf("robotsyes: torrent build failed: %v", err)
+		return
+	}
+	b.cachedTorrent = encoded
+	b.cachedSeedIndex = seedIndex
 }
 
 // rebuild fetches every configured and sitemap-discovered path fresh. It

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/justinstimatze/robotsyes/internal/config"
@@ -27,7 +28,18 @@ const (
 	discoveryPath = "/.well-known/robots-yes.json"
 	exportPath    = "/.well-known/robots-yes/export.ndjson"
 	manifestPath  = "/.well-known/robots-yes/export-manifest.json"
+	torrentPath   = "/.well-known/robots-yes/export.torrent"
 	llmsTxtPath   = "/llms.txt"
+
+	// torrentSeedPrefix is the BEP-19 web-seed target: every page's raw
+	// markdown, served unconditionally (no content negotiation), so the
+	// bytes a torrent client GETs always match the piece hashes
+	// export.buildTorrentInfo computed over the same content. The
+	// internal/export package doesn't reference this constant itself —
+	// it can't import internal/proxy back without a cycle — so New()
+	// joins it with the operator's configured public_url once, here,
+	// and passes the whole thing through as BundlerConfig.TorrentSeedBaseURL.
+	torrentSeedPrefix = "/.well-known/robots-yes/torrent-seed/"
 
 	// paymentRequestTimeout bounds a Merchant.RequirePayment call. A
 	// real settle call is a network round trip to a third-party
@@ -71,16 +83,23 @@ func New(cfg config.Config, verifier identity.Verifier, merchant payments.Mercha
 		limits[tier] = ratelimit.Limit{RequestsPerMinute: rpm}
 	}
 	ttl := time.Duration(cfg.Export.TTLSeconds) * time.Second
+	var seedBaseURL string
+	if cfg.Export.Torrent.Enabled {
+		seedBaseURL = strings.TrimSuffix(cfg.Export.Torrent.PublicURL, "/") + torrentSeedPrefix
+	}
 	return &Server{
 		cfg:      cfg,
 		verifier: verifier,
 		limiter:  ratelimit.New(limits),
 		bundler: export.NewBundler(export.BundlerConfig{
-			Origin:          cfg.Origin,
-			Paths:           cfg.Export.Paths,
-			TTL:             ttl,
-			SitemapURL:      cfg.Export.SitemapURL,
-			MaxSitemapPages: cfg.Export.MaxSitemapPages,
+			Origin:             cfg.Origin,
+			Paths:              cfg.Export.Paths,
+			TTL:                ttl,
+			SitemapURL:         cfg.Export.SitemapURL,
+			MaxSitemapPages:    cfg.Export.MaxSitemapPages,
+			TorrentEnabled:     cfg.Export.Torrent.Enabled,
+			TorrentSeedBaseURL: seedBaseURL,
+			TorrentTrackers:    cfg.Export.Torrent.Trackers,
 		}),
 		upstream: httputil.NewSingleHostReverseProxy(target),
 		client:   &http.Client{Timeout: 10 * time.Second},
@@ -125,6 +144,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // complexity threshold as more well-known paths are added — it already
 // did once, adding manifestPath.
 func (s *Server) serveWellKnown(w http.ResponseWriter, r *http.Request) bool {
+	if strings.HasPrefix(r.URL.Path, torrentSeedPrefix) {
+		s.bundler.ServeTorrentSeed(w, r, strings.TrimPrefix(r.URL.Path, torrentSeedPrefix))
+		return true
+	}
 	switch r.URL.Path {
 	case discoveryPath:
 		s.serveDiscovery(w, r)
@@ -132,6 +155,8 @@ func (s *Server) serveWellKnown(w http.ResponseWriter, r *http.Request) bool {
 		s.bundler.ServeHTTP(w, r)
 	case manifestPath:
 		s.bundler.ServeManifest(w, r)
+	case torrentPath:
+		s.bundler.ServeTorrent(w, r)
 	case llmsTxtPath:
 		s.serveLLMsTxt(w, r)
 	default:
@@ -307,6 +332,11 @@ type discoveryExport struct {
 	// per-path content-negotiation route, instead of re-downloading and
 	// diffing the whole bundle on every crawl.
 	ManifestURL string `json:"manifest_url"`
+	// TorrentURL points at a real, BEP-19 web-seeded .torrent covering
+	// the same pages — omitted entirely when export.torrent.enabled is
+	// false, so the document never advertises a capability the running
+	// server can't back.
+	TorrentURL string `json:"torrent_url,omitempty"`
 }
 
 type discoveryIdentity struct {
@@ -345,6 +375,15 @@ type discoveryPayments struct {
 	// credential in. Payment-Signature and X-Payment (see
 	// paymentCredential) are both accepted; this names the current one.
 	Header string `json:"header,omitempty"`
+}
+
+// torrentURL returns torrentPath when export.torrent.enabled, or "" —
+// which discoveryExport's omitempty tag drops entirely — otherwise.
+func (s *Server) torrentURL() string {
+	if !s.cfg.Export.Torrent.Enabled {
+		return ""
+	}
+	return torrentPath
 }
 
 // paymentsCapabilities reports what the discovery document publishes for
@@ -430,6 +469,7 @@ func (s *Server) serveDiscovery(w http.ResponseWriter, r *http.Request) {
 			URL:         exportPath,
 			Format:      "ndjson",
 			ManifestURL: manifestPath,
+			TorrentURL:  s.torrentURL(),
 		},
 		Identity:   s.identityCapabilities(),
 		RateLimits: s.limiter.Published(),
