@@ -1,0 +1,17 @@
+# compiled binary
+/robotsyes
+
+# local instance config — copy from robotsyes.example.yaml; may name a
+# real origin, never commit
+/robotsyes.yaml
+
+# scratch
+*.log
+
+# editor / OS cruft
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/

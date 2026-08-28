@@ -1,0 +1,31 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      exclude-functions:
+        # Best-effort cleanup; logged elsewhere where it matters.
+        - (*os.File).Close
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Fprint
+    staticcheck:
+      checks:
+        - "all"
+        - "-QF*"
+        - "-ST*"
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck

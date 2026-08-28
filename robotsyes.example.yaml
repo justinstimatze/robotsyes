@@ -1,0 +1,16 @@
+# Copy to robotsyes.yaml and point origin at your real site.
+origin: http://localhost:3000
+addr: ":8080"
+
+export:
+  paths:
+    - /
+    - /about
+  ttl_seconds: 300
+
+# requests_per_minute per identity tier — see internal/identity for what
+# grants each tier. Published at /.well-known/robots-yes.json.
+rate_limits:
+  unverified: 10
+  declared: 60
+  verified: 300
