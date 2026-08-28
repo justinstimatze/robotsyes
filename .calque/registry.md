@@ -394,3 +394,369 @@ Verdicts:
   the same private helper and the same stdlib package — that's what a
   correctly-tested single feature looks like, not a duplication signal.
 - reviewed: 2026-08-28
+
+<!-- pillar-4 x402 paid overflow (RequirePayment 981699e) + its code-health
+     follow-up split RequirePayment/isHexAddress/decodeCredentialJSON/
+     cmdServe and added replaycache.go, surfacing 36 new pairs + 3 new
+     clusters. Adjudicated in one pass below, grouped by shared cause
+     rather than one full write-up each — most are the same few shapes
+     repeated across the three now-mirrored caches and the newly-split
+     helper functions. -->
+
+## 33 — false-alarm
+- pair: internal/identity/cardcache.go::cardCache.len | internal/paymentgate/chitgate/replaycache.go::replayCache.len
+- verdict: false-alarm
+- policy: none
+- note: see #37 — one write-up covers the whole len/removeElement/constructor
+  family across cardCache, nonceCache, and replayCache.
+- reviewed: 2026-08-28
+
+## 34 — false-alarm
+- pair: internal/identity/cardcache.go::cardCache.len | internal/identity/noncecache.go::nonceCache.len
+- verdict: false-alarm
+- policy: none
+- note: see #37.
+- reviewed: 2026-08-28
+
+## 35 — false-alarm
+- pair: internal/identity/cardcache.go::cardCache.removeElement | internal/paymentgate/chitgate/replaycache.go::replayCache.removeElement
+- verdict: false-alarm
+- policy: none
+- note: see #37.
+- reviewed: 2026-08-28
+
+## 36 — false-alarm
+- pair: internal/identity/cardcache.go::cardCache.removeElement | internal/identity/noncecache.go::nonceCache.removeElement
+- verdict: false-alarm
+- policy: none
+- note: see #37.
+- reviewed: 2026-08-28
+
+## 37 — false-alarm
+- pair: internal/identity/noncecache.go::nonceCache.len | internal/paymentgate/chitgate/replaycache.go::replayCache.len
+- signal: name~1.00(len); shared-calls=3 (same across #33-#36, #38-#41)
+- verdict: false-alarm
+- policy: none
+- note: cardCache, nonceCache, and now replayCache all use the identical
+  container/list + map[string]*list.Element + sync.Mutex bounded-LRU
+  idiom — deliberately, so a reader who's seen one recognizes the other
+  two, not because they share a contract. Nothing calls them
+  polymorphically and nothing depends on their internals staying in sync:
+  if nonceCache's eviction changed, cardCache and replayCache would be
+  unaffected. Verdict is false-alarm rather than contracted-twin-ok
+  because there's no shared external contract to pin with a differential
+  test — only a shared internal idiom. Covers #33-#41 (len x3 pairs,
+  removeElement x3 pairs, the three new*Cache constructor pairs).
+- reviewed: 2026-08-28
+
+## 38 — false-alarm
+- pair: internal/identity/noncecache.go::nonceCache.removeElement | internal/paymentgate/chitgate/replaycache.go::replayCache.removeElement
+- verdict: false-alarm
+- policy: none
+- note: see #37.
+- reviewed: 2026-08-28
+
+## 39 — false-alarm
+- pair: internal/identity/noncecache.go::newNonceCache | internal/paymentgate/chitgate/replaycache.go::newReplayCache
+- verdict: false-alarm
+- policy: none
+- note: see #37.
+- reviewed: 2026-08-28
+
+## 40 — false-alarm
+- pair: internal/identity/cardcache.go::newCardCache | internal/paymentgate/chitgate/replaycache.go::newReplayCache
+- verdict: false-alarm
+- policy: none
+- note: see #37.
+- reviewed: 2026-08-28
+
+## 41 — false-alarm
+- pair: internal/identity/cardcache.go::newCardCache | internal/identity/noncecache.go::newNonceCache
+- verdict: false-alarm
+- policy: none
+- note: see #37.
+- reviewed: 2026-08-28
+
+## 42 — false-alarm
+- pair: internal/paymentgate/chitgate/replaycache.go::replayCache.reserve | internal/paymentgate/chitgate/replaycache.go::replayCache.commit
+- signal: shared-writes=[items[]]; shared-calls=6; same-receiver
+- verdict: false-alarm
+- policy: none
+- note: two states of one reserve/commit/release lifecycle on the same
+  cache, not two competing implementations — same decomposition shape as
+  #9. See #47 for why this lifecycle doesn't collapse into cardCache.put
+  or nonceCache.seen's single check-and-set despite the surface overlap.
+- reviewed: 2026-08-28
+
+## 43 — false-alarm
+- pair: internal/identity/noncecache.go::nonceCache.seen | internal/paymentgate/chitgate/replaycache.go::replayCache.reserve
+- verdict: false-alarm
+- policy: none
+- note: see #47.
+- reviewed: 2026-08-28
+
+## 44 — false-alarm
+- pair: internal/identity/noncecache.go::nonceCache.seen | internal/paymentgate/chitgate/replaycache.go::replayCache.commit
+- verdict: false-alarm
+- policy: none
+- note: see #47.
+- reviewed: 2026-08-28
+
+## 45 — false-alarm
+- pair: internal/identity/cardcache.go::cardCache.put | internal/identity/noncecache.go::nonceCache.seen
+- verdict: false-alarm
+- policy: none
+- note: see #47.
+- reviewed: 2026-08-28
+
+## 46 — false-alarm
+- pair: internal/identity/cardcache.go::cardCache.put | internal/paymentgate/chitgate/replaycache.go::replayCache.reserve
+- verdict: false-alarm
+- policy: none
+- note: see #47.
+- reviewed: 2026-08-28
+
+## 47 — false-alarm
+- pair: internal/identity/cardcache.go::cardCache.put | internal/paymentgate/chitgate/replaycache.go::replayCache.commit
+- signal: shared-writes=[items[]]; shared-calls=5-8 (varies across #42-#47)
+- verdict: false-alarm
+- policy: none
+- note: all three caches' write path shares the same LRU insert/evict
+  bookkeeping (see #37) but the operations themselves genuinely differ:
+  cardCache.put is an unconditional upsert (insert-or-refresh, never
+  rejects); nonceCache.seen is a single atomic check-and-set (insert if
+  absent, report replay if present) — correct because WebBotAuth
+  signature verification is synchronous, so a plain check-and-set has no
+  race window; replayCache splits that same check into reserve (claim) /
+  commit (finalize) / release (undo-on-failure) specifically because
+  chit settlement is a slow, fallible network call — a naive
+  check-and-set there would have a real time-of-check-to-time-of-use
+  race between two concurrent requests presenting the same credential
+  (see the chitgate package doc and replaycache.go). The three-way split
+  is deliberate design, not accidental drift between copies of the same
+  function. Covers #42-#47.
+- reviewed: 2026-08-28
+
+## 48 — false-alarm
+- pair: internal/paymentgate/chitgate/chitgate.go::New | internal/proxy/proxy.go::New
+- signal: name~1.00(new); shared-calls=1
+- verdict: false-alarm
+- policy: none
+- note: package-qualified constructor idiom (pkg.New()) — same as #3.
+- reviewed: 2026-08-28
+
+## 49 — false-alarm
+- pair: internal/paymentgate/chitgate/chitgate.go::New | internal/ratelimit/ratelimit.go::New
+- verdict: false-alarm
+- policy: none
+- note: same as #48/#3.
+- reviewed: 2026-08-28
+
+## 50 — false-alarm
+- pair: cmd/robotsyes/main.go::loadConfig | cmd/robotsyes/main.go::buildMerchant
+- verdict: false-alarm
+- policy: none
+- note: sibling decomposition steps of cmdServe, split out to bring its
+  cyclomatic complexity under CodeScene's threshold (was 9) — same
+  decomposition shape as #9/#23/#24. Covers #50-#54 (loadConfig/
+  buildMerchant, cmdServe/serve, loadConfig/serve, buildMerchant/serve,
+  loadConfig/config.Load).
+- reviewed: 2026-08-28
+
+## 51 — false-alarm
+- pair: cmd/robotsyes/main.go::cmdServe | cmd/robotsyes/main.go::serve
+- verdict: false-alarm
+- policy: none
+- note: see #50 — dispatcher calling its own helper, same shape as #15/#16.
+- reviewed: 2026-08-28
+
+## 52 — false-alarm
+- pair: cmd/robotsyes/main.go::loadConfig | cmd/robotsyes/main.go::serve
+- verdict: false-alarm
+- policy: none
+- note: see #50.
+- reviewed: 2026-08-28
+
+## 53 — false-alarm
+- pair: cmd/robotsyes/main.go::buildMerchant | cmd/robotsyes/main.go::serve
+- verdict: false-alarm
+- policy: none
+- note: see #50.
+- reviewed: 2026-08-28
+
+## 54 — false-alarm
+- pair: cmd/robotsyes/main.go::loadConfig | internal/config/config.go::Load
+- signal: name~0.50(load); shared-calls=1
+- verdict: false-alarm
+- policy: none
+- note: loadConfig is a thin wrapper adding the empty-path→Default()
+  branch around config.Load — caller/callee across packages, same shape
+  as #50, not duplication.
+- reviewed: 2026-08-28
+
+## 55 — false-alarm
+- pair: internal/paymentgate/chitgate/chitgate.go::isHexAddress | internal/paymentgate/chitgate/chitgate.go::isHexDigit
+- signal: name~0.50(hex+is)
+- verdict: false-alarm
+- policy: none
+- note: isHexDigit was extracted from isHexAddress to clear a CodeScene
+  Complex Conditional flag on the inline tri-range switch — same
+  decomposition shape as #9.
+- reviewed: 2026-08-28
+
+## 56 — false-alarm
+- pair: internal/proxy/proxy.go::paymentCredential | internal/proxy/proxy_test.go::TestPaymentCredentialPrefersPaymentSignatureHeader
+- verdict: false-alarm
+- policy: none
+- note: a function and its own direct test — same shape as #13. Covers
+  #56 and #59 (the Prefers/FallsBack precedence tests).
+- reviewed: 2026-08-28
+
+## 57 — false-alarm
+- pair: internal/paymentgate/chitgate/chitgate.go::isHexAddress | internal/paymentgate/chitgate/chitgate_test.go::TestIsHexAddress
+- verdict: false-alarm
+- policy: none
+- note: a function and its own direct test — same shape as #13.
+- reviewed: 2026-08-28
+
+## 58 — false-alarm
+- pair: internal/identity/identity.go::unquoteSignatureAgent | internal/identity/signed_test.go::TestUnquoteSignatureAgent
+- verdict: false-alarm
+- policy: none
+- note: a function and its own direct test — same shape as #13.
+- reviewed: 2026-08-28
+
+## 59 — false-alarm
+- pair: internal/proxy/proxy.go::paymentCredential | internal/proxy/proxy_test.go::TestPaymentCredentialFallsBackToXPayment
+- verdict: false-alarm
+- policy: none
+- note: see #56.
+- reviewed: 2026-08-28
+
+## 60 — false-alarm
+- pair: internal/paymentgate/chitgate/chitgate.go::chitMerchant.RequirePayment | internal/proxy/proxy_test.go::fakeMerchant.RequirePayment
+- signal: name~1.00(payment+require)
+- verdict: false-alarm
+- policy: none
+- note: both implement the payments.Merchant interface (chitMerchant for
+  real, fakeMerchant as the proxy package's test double) — the shared
+  name and signature is the interface contract, not accidental
+  duplication. Same shape as #1.
+- reviewed: 2026-08-28
+
+## 61 — false-alarm
+- pair: internal/paymentgate/chitgate/chitgate.go::challengeFrom | internal/paymentgate/chitgate/chitgate_test.go::decodeRequirements
+- verdict: false-alarm
+- policy: none
+- note: decodeRequirements is the test helper that unwraps the
+  Challenge.Body a real caller would decode — a function and its own
+  test tooling, same shape as #13.
+- reviewed: 2026-08-28
+
+## 62 — false-alarm
+- pair: internal/proxy/proxy.go::Server.handleRateLimited | internal/proxy/proxy.go::Server.writeRateLimited
+- signal: name~0.67(limited+rate); shared-calls=5; same-receiver
+- verdict: false-alarm
+- policy: none
+- note: writeRateLimited is called directly by handleRateLimited (both
+  the no-merchant-configured path and the settle-failure fallback) —
+  caller/callee on the same type, same shape as #15/#16.
+- reviewed: 2026-08-28
+
+## 63 — false-alarm
+- pair: internal/proxy/proxy.go::Server.handleRateLimited | internal/proxy/proxy.go::Server.serveDiscovery
+- verdict: false-alarm
+- policy: none
+- note: sibling handlers on the same Server sharing a little plumbing —
+  same shape as #10/#11/#18/#31.
+- reviewed: 2026-08-28
+
+## 64 — false-alarm
+- pair: internal/proxy/proxy.go::Server.handleRateLimited | internal/proxy/proxy.go::Server.serveMarkdown
+- verdict: false-alarm
+- policy: none
+- note: same as #63.
+- reviewed: 2026-08-28
+
+## 65 — false-alarm
+- pair: internal/proxy/proxy.go::paymentCredential | internal/proxy/proxy.go::Server.paymentsCapabilities
+- signal: shared-strings=1 ("Payment-Signature"/"X-Payment")
+- verdict: false-alarm
+- policy: none
+- note: paymentCredential reads the header, paymentsCapabilities
+  publishes the same header names in the discovery document — shared
+  literal, unrelated logic, same shape as #19.
+- reviewed: 2026-08-28
+
+## 66 — false-alarm
+- pair: internal/proxy/proxy.go::Server.handleRateLimited | internal/proxy/proxy_test.go::rateLimitedRequest
+- verdict: false-alarm
+- policy: none
+- note: rateLimitedRequest is a test helper that drives a request past
+  the rate limit to exercise handleRateLimited — test tooling, same shape
+  as #13. Covers #66-#67.
+- reviewed: 2026-08-28
+
+## 67 — false-alarm
+- pair: internal/proxy/proxy.go::Server.writeRateLimited | internal/proxy/proxy_test.go::rateLimitedRequest
+- verdict: false-alarm
+- policy: none
+- note: see #66.
+- reviewed: 2026-08-28
+
+## 68 — false-alarm
+- pair: internal/identity/signed.go::NewSignedVerifier | internal/identity/signed_test.go::newTestSignedVerifier
+- signal: shared-calls=1; name~0.75(new+signed+verifier)
+- verdict: false-alarm
+- policy: none
+- note: unlike #2 (newTestCardFetcher, a real test double with divergent
+  behavior worth pinning), newTestSignedVerifier is presumed to be a
+  thin constructor-name echo for building a SignedVerifier in test setup.
+  No divergent behavior found worth a differential test; revisit if that
+  changes.
+- reviewed: 2026-08-28
+
+## C2 — drift (one member); false-alarm (rest of cluster)
+- cluster: internal/identity/signed.go::parseSignatureParams | internal/identity/signed_test.go::signRequest | internal/paymentgate/chitgate/chitgate.go::decodeX402Nonce | internal/paymentgate/chitgate/chitgate_test.go::testCredential | internal/proxy/proxy.go::Server.identityCapabilities
+- signal: shared seam(s): created, keyid, expires, nonce
+- verdict: false-alarm (cluster as a whole) / drift (one real pair inside it — see below)
+- policy: none for the cluster; the drift below is flagged, not fixed, in
+  this pass
+- note: the chitgate/x402 members (decodeX402Nonce, testCredential) share
+  nothing real with the WebBotAuth members — "nonce"/"created"/"expires"
+  are generic replay-defense vocabulary both protocols happen to use, not
+  a shared implementation (x402's fields live in JSON payload.
+  authorization, WebBotAuth's in a Signature-Input parameter string).
+  BUT: within that cluster, parseSignatureParams (internal/identity/
+  signed.go:458) reads "created"/"expires"/"keyid"/"nonce"/"alg"/"tag" as
+  hardcoded map keys, and Server.identityCapabilities (internal/proxy/
+  proxy.go:370) independently hardcodes the same six names as
+  RequiredSignatureParams — the exact "two independent copies of the
+  same string set, no compile-time tie" shape that #14 turned out to be a
+  real bug. Predates this session's payments work (pillar-3 code, not
+  touched by the pillar-4 commit) and is lower-severity than #14 was:
+  these are IETF-draft (draft-meunier-web-bot-auth-architecture) wire
+  parameter names, not an internal enum the codebase itself might rename.
+  Flagging rather than fixing — out of scope for this pass — but this is
+  a real, if minor, drift risk and should not be silently marked
+  false-alarm the way this note's sibling entries were.
+- reviewed: 2026-08-28
+
+## C3 — false-alarm
+- cluster: internal/paymentgate/chitgate/chitgate.go::decodeX402Nonce | internal/paymentgate/chitgate/chitgate_test.go::TestValidateCredentialRejectsMissingNonce | internal/paymentgate/chitgate/chitgate_test.go::testCredential
+- signal: shared seam(s): from, authorization, payload
+- verdict: false-alarm
+- policy: none
+- note: decodeX402Nonce and its own two direct tests/fixtures — same
+  shape as #13.
+- reviewed: 2026-08-28
+
+## C4 — false-alarm
+- cluster: internal/proxy/proxy.go::Server.handleRateLimited | internal/proxy/proxy_test.go::TestPaymentCredentialFallsBackToXPayment | internal/proxy/proxy_test.go::TestPaymentCredentialPrefersPaymentSignatureHeader
+- signal: shared seam(s): legacy, paymentCredential
+- verdict: false-alarm
+- policy: none
+- note: same as #56/#59 — handleRateLimited is swept in only because it's
+  paymentCredential's caller; the tests exercise paymentCredential's
+  header-precedence logic directly.
+- reviewed: 2026-08-28

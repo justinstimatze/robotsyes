@@ -187,7 +187,7 @@ func (s *Server) handleRateLimited(w http.ResponseWriter, r *http.Request, tier 
 		Resource:   r.URL.Path,
 		Credential: paymentCredential(r.Header),
 	})
-	if err != nil || (settlement == nil && challenge == nil) {
+	if !paymentGranted(err, settlement, challenge) {
 		s.metrics.recordDenied(tier)
 		s.writeRateLimited(w, string(tier))
 		return false
@@ -201,6 +201,17 @@ func (s *Server) handleRateLimited(w http.ResponseWriter, r *http.Request, tier 
 	}
 	s.metrics.recordPaymentSettled()
 	return true
+}
+
+// paymentGranted reports whether a payments.Merchant.RequirePayment
+// result counts as "let this request through". The interface contract
+// is exactly one of (Settlement, nil, nil) / (nil, Challenge, nil) /
+// (nil, nil, err) — settlement == nil && challenge == nil (with err ==
+// nil) guards against a Merchant implementation violating that
+// contract. In a payment gate, an ambiguous result must deny, not
+// allow.
+func paymentGranted(err error, settlement *payments.Settlement, challenge *payments.Challenge) bool {
+	return err == nil && (settlement != nil || challenge != nil)
 }
 
 // paymentCredential extracts a settle credential from the request's

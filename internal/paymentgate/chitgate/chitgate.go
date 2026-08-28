@@ -199,10 +199,34 @@ func (c *chitMerchant) RequirePayment(ctx context.Context, req payments.PaymentR
 		}
 	}()
 
-	// Call 2: settle the presented credential. chit's Session branch
-	// skips the pull /charge entirely; the requirements it settles
-	// against are the same ones advertised in call 1 (recomputed above,
-	// deterministically).
+	settlement, challenge, err := c.settle(ctx, req, reqs, payer)
+	if err != nil {
+		return nil, nil, err
+	}
+	if settlement == nil {
+		// Still needs payment (credential rejected / insufficient), or
+		// settlement failed to reach chit at all — challenge is nil in
+		// the latter case too, since c.settle only returns one of
+		// (settlement, challenge) non-nil. Falls through to the
+		// deferred release: this nonce never settled, so a later retry
+		// (a fresh signed authorization, not this same rejected one)
+		// must not be blocked by it.
+		return nil, challenge, nil
+	}
+
+	committed = true
+	c.replays.commit(nonce)
+	return settlement, nil, nil
+}
+
+// settle performs call 2 against chit: detect the protocol, open a
+// session, charge it, then settle on-chain. Split out of RequirePayment
+// so the replay-cache reserve/commit/release lifecycle (which wraps this
+// call) stays readable independent of chit's own multi-step call shape.
+func (c *chitMerchant) settle(ctx context.Context, req payments.PaymentRequest, reqs chit.X402PaymentRequirements, payer string) (*payments.Settlement, *payments.Challenge, error) {
+	// chit's Session branch skips the pull /charge entirely; the
+	// requirements it settles against are the same ones advertised in
+	// call 1 (recomputed by the caller, deterministically).
 	hdr := http.Header{}
 	hdr.Set("X-Payment", req.Credential)
 	detected := chit.DetectProtocol(hdr)
@@ -231,12 +255,8 @@ func (c *chitMerchant) RequirePayment(ctx context.Context, req payments.PaymentR
 		return nil, nil, err
 	}
 	if ch != nil {
-		// Still needs payment (credential rejected / insufficient).
-		// Re-challenge with our own minted requirements — never trust a
-		// chit-built one here. Falls through to the deferred release:
-		// this nonce never settled, so a later retry (a fresh signed
-		// authorization, not this same rejected one) must not be
-		// blocked by it.
+		// Never trust a chit-built challenge here — re-challenge with
+		// our own minted requirements instead.
 		return nil, challengeFrom(reqs), nil
 	}
 
@@ -246,9 +266,6 @@ func (c *chitMerchant) RequirePayment(ctx context.Context, req payments.PaymentR
 	if err := c.m.CloseSession(ctx, session); err != nil {
 		return nil, nil, fmt.Errorf("chitgate: settlement failed: %w", err)
 	}
-
-	committed = true
-	c.replays.commit(nonce)
 	return &payments.Settlement{PayerAddress: payer}, nil, nil
 }
 
@@ -349,29 +366,40 @@ func decodeX402Nonce(credential string) (string, error) {
 	return nonce, nil
 }
 
-// decodeCredentialJSON mirrors chit's unexported parseCredentialJSON
-// (server/protocol.go) byte-for-byte: standard base64 first, then
-// base64url without padding, then raw JSON. Keeping this in lockstep
-// with chit's own decode order matters — a divergence would make this
-// package reject (or accept) a shape chit itself does the opposite for.
+// credentialDecoders is chit's own unexported parseCredentialJSON
+// (server/protocol.go) decode order, tried in sequence: standard
+// base64 first, then base64url without padding, then raw JSON. Keeping
+// this order in lockstep with chit's matters — a divergence would make
+// this package reject (or accept) a shape chit itself does the opposite
+// for.
+var credentialDecoders = []func(string) ([]byte, error){
+	base64.StdEncoding.DecodeString,
+	base64.RawURLEncoding.DecodeString,
+	func(s string) ([]byte, error) { return []byte(s), nil },
+}
+
+// decodeCredentialJSON mirrors chit's unexported parseCredentialJSON:
+// try each decoder in credentialDecoders, in order, and return the first
+// one that both decodes and unmarshals to a non-nil JSON object.
 func decodeCredentialJSON(credential string) map[string]any {
-	if dec, err := base64.StdEncoding.DecodeString(credential); err == nil {
-		var obj map[string]any
-		if json.Unmarshal(dec, &obj) == nil && obj != nil {
+	for _, decode := range credentialDecoders {
+		if obj := decodeJSONObject(decode, credential); obj != nil {
 			return obj
 		}
-	}
-	if dec, err := base64.RawURLEncoding.DecodeString(credential); err == nil {
-		var obj map[string]any
-		if json.Unmarshal(dec, &obj) == nil && obj != nil {
-			return obj
-		}
-	}
-	var obj map[string]any
-	if json.Unmarshal([]byte(credential), &obj) == nil && obj != nil {
-		return obj
 	}
 	return nil
+}
+
+func decodeJSONObject(decode func(string) ([]byte, error), credential string) map[string]any {
+	raw, err := decode(credential)
+	if err != nil {
+		return nil
+	}
+	var obj map[string]any
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return nil
+	}
+	return obj
 }
 
 // isHexAddress reports whether s is a 20-byte 0x-prefixed hex address.
@@ -383,12 +411,23 @@ func isHexAddress(s string) bool {
 	if len(s) != 42 || s[0] != '0' || s[1] != 'x' {
 		return false
 	}
-	for _, r := range s[2:] {
-		switch {
-		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
-		default:
+	for i := 2; i < len(s); i++ {
+		if !isHexDigit(s[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+func isHexDigit(b byte) bool {
+	switch {
+	case b >= '0' && b <= '9':
+		return true
+	case b >= 'a' && b <= 'f':
+		return true
+	case b >= 'A' && b <= 'F':
+		return true
+	default:
+		return false
+	}
 }
