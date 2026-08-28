@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"runtime/debug"
+	"time"
 
 	"github.com/justinstimatze/robotsyes/internal/config"
 	"github.com/justinstimatze/robotsyes/internal/identity"
@@ -96,7 +97,9 @@ func cmdServe(args []string) {
 		cfg = loaded
 	}
 
-	srv, err := proxy.New(cfg, identity.DeclaredVerifier{})
+	cards := identity.NewCardFetcher(5*time.Minute, identity.DefaultMaxCardCacheEntries)
+	verifier := identity.NewSignedVerifier(cards)
+	srv, err := proxy.New(cfg, verifier)
 	if err != nil {
 		log.Fatalf("robotsyes: %v", err)
 	}

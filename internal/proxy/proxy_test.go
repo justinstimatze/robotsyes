@@ -164,3 +164,44 @@ func TestRateLimitReturns429(t *testing.T) {
 		t.Error("expected a Retry-After header on 429")
 	}
 }
+
+// TestRateLimitKeysOnIPNotPort guards against a real bug found by an
+// end-to-end smoke test (not caught by TestRateLimitReturns429, which
+// happens to reuse the same httptest.NewRequest RemoteAddr on every
+// call): every real TCP connection carries its own ephemeral client
+// port, so keying the limiter on the full RemoteAddr gave a fresh bucket
+// to every new connection from the same IP and never actually limited
+// anything.
+func TestRateLimitKeysOnIPNotPort(t *testing.T) {
+	s := newTestServer(t, func(c *config.Config) {
+		c.RateLimits = map[string]int{"unverified": 1}
+	})
+
+	reqFrom := func(port string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set("Accept", "text/html")
+		r.RemoteAddr = "203.0.113.9:" + port
+		return r
+	}
+
+	w1 := httptest.NewRecorder()
+	s.ServeHTTP(w1, reqFrom("1111"))
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first request (port 1111) status = %d, want 200", w1.Code)
+	}
+
+	w2 := httptest.NewRecorder()
+	s.ServeHTTP(w2, reqFrom("2222"))
+	if w2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request from same IP, different port (2222) status = %d, want 429", w2.Code)
+	}
+
+	w3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req3.Header.Set("Accept", "text/html")
+	req3.RemoteAddr = "198.51.100.4:1111"
+	s.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("request from a genuinely different IP status = %d, want 200", w3.Code)
+	}
+}

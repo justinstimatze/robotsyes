@@ -7,6 +7,7 @@ package proxy
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -61,7 +62,7 @@ func New(cfg config.Config, verifier identity.Verifier) (*Server, error) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := s.verifier.Verify(r)
 	tier := string(id.Tier)
-	if !s.limiter.Allow(tier, clientKey(r)) {
+	if !s.limiter.Allow(tier, clientKey(r, id)) {
 		s.writeRateLimited(w, tier)
 		return
 	}
@@ -83,11 +84,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.upstream.ServeHTTP(w, r)
 }
 
-// clientKey identifies a caller for rate-limit bucketing. A verified
-// identity should key on AgentID once pillar 3 is real; for now every
-// tier keys on remote address.
-func clientKey(r *http.Request) string {
-	return r.RemoteAddr
+// clientKey identifies a caller for rate-limit bucketing. TierVerified
+// keys on the cryptographically-bound AgentID, so a bot keeps its bucket
+// across IP changes. Every other tier keys on remote IP instead:
+// TierDeclared's AgentID is an unsigned, self-published claim, so keying
+// on it there would let one IP mint unlimited buckets (send a new
+// claimed identity, get a fresh one) or exhaust a specific bot's bucket
+// by replaying its AgentID without ever holding its private key.
+func clientKey(r *http.Request, id identity.Identity) string {
+	if id.Tier == identity.TierVerified {
+		return id.AgentID
+	}
+	// r.RemoteAddr is "ip:port", and the port is the client's ephemeral
+	// source port — different on every TCP connection, even from the
+	// same client. Keying on the whole thing gives a fresh bucket to
+	// every new connection, which defeats the limiter entirely.
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func (s *Server) writeRateLimited(w http.ResponseWriter, tier string) {
@@ -152,8 +168,34 @@ type discoveryExport struct {
 }
 
 type discoveryIdentity struct {
-	Methods    []string `json:"methods"`
-	DeclareVia string   `json:"declare_via"`
+	Methods              []string `json:"methods"`
+	DeclareVia           string   `json:"declare_via"`
+	SignatureInputHeader string   `json:"signature_input_header,omitempty"`
+	SignatureHeader      string   `json:"signature_header,omitempty"`
+	Algorithm            string   `json:"algorithm,omitempty"`
+}
+
+// identityCapabilities describes what the Server can actually check,
+// keyed off the concrete Verifier it was built with — so the discovery
+// document never advertises a tier the running server can't grant.
+func (s *Server) identityCapabilities() discoveryIdentity {
+	switch s.verifier.(type) {
+	case *identity.SignedVerifier:
+		return discoveryIdentity{
+			Methods:              []string{"unverified", "declared", "verified"},
+			DeclareVia:           identity.SignatureAgentHeader,
+			SignatureInputHeader: identity.SignatureInputHeader,
+			SignatureHeader:      identity.SignatureHeader,
+			Algorithm:            "ed25519",
+		}
+	case identity.DeclaredVerifier:
+		return discoveryIdentity{
+			Methods:    []string{"unverified", "declared"},
+			DeclareVia: identity.SignatureAgentHeader,
+		}
+	default:
+		return discoveryIdentity{Methods: []string{"unverified"}}
+	}
 }
 
 func (s *Server) serveDiscovery(w http.ResponseWriter, r *http.Request) {
@@ -168,10 +210,7 @@ func (s *Server) serveDiscovery(w http.ResponseWriter, r *http.Request) {
 			URL:    exportPath,
 			Format: "ndjson",
 		},
-		Identity: discoveryIdentity{
-			Methods:    []string{"unverified", "declared"},
-			DeclareVia: identity.SignatureAgentHeader,
-		},
+		Identity:   s.identityCapabilities(),
 		RateLimits: s.limiter.Published(),
 	}
 	w.Header().Set("Content-Type", "application/json")

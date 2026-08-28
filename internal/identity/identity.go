@@ -1,9 +1,12 @@
-// Package identity implements pillar 3: verified bot identity — currently
-// stubbed. Real cryptographic verification (HTTP Message Signatures over a
-// self-published Signature Agent Card, per the IETF WebBotAuth line of
-// work) needs a registry/trust layer that doesn't exist in open form yet.
-// This package defines the seam a real Verifier plugs into once one does,
-// and ships two verifiers that work today without it.
+// Package identity implements pillar 3: verified bot identity. The
+// signature check itself doesn't need a registry — SignedVerifier grants
+// TierVerified to any request whose signature checks out against the
+// Ed25519 key published at the URL the request itself names. What's
+// still missing is a trust/reputation layer over that: nothing here says
+// the key at that URL belongs to a bot worth trusting, only that
+// whoever holds the matching private key sent this exact request. A
+// real WebBotAuth-style registry would add that layer on top; this
+// package defines the seam (Verifier) it would plug into.
 package identity
 
 import "net/http"
@@ -19,8 +22,8 @@ const (
 	// TierDeclared is a self-published, unsigned identity claim — a bot
 	// says who it is but nothing checks the claim cryptographically.
 	TierDeclared Tier = "declared"
-	// TierVerified is a claim backed by a valid signature. No shipped
-	// Verifier grants this yet — see NoopVerifier and DeclaredVerifier.
+	// TierVerified is a claim backed by a valid Ed25519 signature — see
+	// SignedVerifier.
 	TierVerified Tier = "verified"
 )
 
