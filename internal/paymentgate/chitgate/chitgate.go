@@ -403,10 +403,10 @@ func decodeJSONObject(decode func(string) ([]byte, error), credential string) ma
 }
 
 // isHexAddress reports whether s is a 20-byte 0x-prefixed hex address.
-// Ported from a sibling project's own x402 credential validation
-// (justinstimatze/gemot's internal/payments/x402gate.go) — the same
-// check, used here for both the operator-configured payout address and
-// a credential's extracted payer address.
+// Ported from the same check in
+// https://github.com/justinstimatze/gemot's x402 credential validation,
+// used here for both the operator-configured payout address and a
+// credential's extracted payer address.
 func isHexAddress(s string) bool {
 	if len(s) != 42 || s[0] != '0' || s[1] != 'x' {
 		return false
