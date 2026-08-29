@@ -4,6 +4,14 @@
 
 ### Added
 
+- **CI hardening**: `govulncheck` (reachable-vulnerability scanning, both
+  build-tag configs), `gosec` added to the lint pass, and a Trivy scan of
+  the actually-built Docker image (not just the base tag Dependabot
+  tracks) — caught and this release fixes a real HIGH CVE in alpine:
+  3.24's OpenSSL packages via `apk upgrade` in the runtime stage.
+  `golangci-lint-action` now pins an exact version instead of tracking
+  `latest`. `main` also has real branch protection now: 6 required
+  status checks across `ci` and `docker`, PRs required, no admin bypass.
 - **Docker images**, two variants matching the existing build-tag split:
   `ghcr.io/justinstimatze/robotsyes:edge` (default, content negotiation +
   bulk export) and `:edge-full` (payments + torrent). Built and pushed on
