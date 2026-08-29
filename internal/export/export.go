@@ -385,11 +385,8 @@ const maxConcurrentSitemapFetches = 10
 // goroutines, so no synchronization is needed beyond the semaphore
 // itself.
 func (b *Bundler) fetchPagesConcurrently(paths []string) []Page {
-	type result struct {
-		page Page
-		ok   bool
-	}
-	results := make([]result, len(paths))
+	fetched := make([]Page, len(paths))
+	ok := make([]bool, len(paths))
 	sem := make(chan struct{}, maxConcurrentSitemapFetches)
 	var wg sync.WaitGroup
 	for i, p := range paths {
@@ -398,23 +395,32 @@ func (b *Bundler) fetchPagesConcurrently(paths []string) []Page {
 		go func(i int, p string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			md, err := b.fetchAndStrip(p)
-			if err != nil {
-				log.Printf("robotsyes: skipping sitemap path %s: %v", p, err)
-				return
-			}
-			results[i] = result{page: Page{Path: p, Markdown: md}, ok: true}
+			fetched[i], ok[i] = b.fetchOnePage(p)
 		}(i, p)
 	}
 	wg.Wait()
 
 	pages := make([]Page, 0, len(paths))
-	for _, r := range results {
-		if r.ok {
-			pages = append(pages, r.page)
+	for i, got := range ok {
+		if got {
+			pages = append(pages, fetched[i])
 		}
 	}
 	return pages
+}
+
+// fetchOnePage fetches and strips one sitemap-discovered path for
+// fetchPagesConcurrently, logging and reporting ok=false on failure
+// rather than returning an error — the caller (bundleSitemapPages)
+// already treats a bad auto-discovered path as noise to skip, not
+// something to abort the whole rebuild on.
+func (b *Bundler) fetchOnePage(p string) (page Page, ok bool) {
+	md, err := b.fetchAndStrip(p)
+	if err != nil {
+		log.Printf("robotsyes: skipping sitemap path %s: %v", p, err)
+		return Page{}, false
+	}
+	return Page{Path: p, Markdown: md}, true
 }
 
 // maxPageResponseBytes bounds how much of an origin page fetchAndStrip will
