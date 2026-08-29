@@ -18,7 +18,7 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -tags "${TAGS}" -ldflags "-s -w -X main.version=${VERSION}" -o /out/robotsyes ./cmd/robotsyes
 
 # ---- runtime ----
-FROM alpine:3.20
+FROM alpine:3.24
 
 # ca-certificates: robotsyes makes outbound HTTPS calls (identity card
 # fetches, x402 settlement in the full image) that need a trust store.
