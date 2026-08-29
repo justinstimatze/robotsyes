@@ -1,12 +1,15 @@
 name: dependabot-auto-merge
-# Auto-merge Dependabot PRs after the `ci` workflow passes — CI-gated WITHOUT relying on branch
-# protection (main has no required status checks). `workflow_run` fires only after `ci` concludes; we
-# merge the associated Dependabot PR if CI succeeded and the bump is NOT a major (parsed from the PR
-# title; an unparseable/grouped title is left for manual review). Standalone, so it adds auto-merge
-# without changing ci.yml or any other setting.
+# Auto-merge Dependabot PRs once every required check has passed. main
+# now has real branch protection (6 required status checks split across
+# the `ci` and `docker` workflows — see ci.yml and docker.yml) — this
+# listens for EITHER workflow to complete and attempts a merge each
+# time. Whichever of the two finishes last is the one that actually
+# succeeds; an attempt while the other is still pending is rejected by
+# GitHub itself and treated as expected, not a failure (see the
+# if/else below).
 on:
   workflow_run:
-    workflows: ["ci"]
+    workflows: ["ci", "docker"]
     types: [completed]
 permissions:
   contents: write
@@ -19,7 +22,7 @@ jobs:
       github.event.workflow_run.actor.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      - name: Merge the PR if CI passed and it's a non-major bump
+      - name: Merge the PR if all required checks passed and it's a non-major bump
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -33,5 +36,8 @@ jobs:
           to=$(echo "$title"   | sed -nE 's/.* to ([0-9]+)\.[0-9].*/\1/p')
           if [ -z "$from" ] || [ -z "$to" ]; then echo "unparseable title, manual: $title"; exit 0; fi
           if [ "$from" != "$to" ]; then echo "major bump $from->$to, manual: $title"; exit 0; fi
-          echo "merging #$num: $title"
-          gh pr merge "$num" --repo "$REPO" --squash --delete-branch
+          if gh pr merge "$num" --repo "$REPO" --squash --delete-branch; then
+            echo "merged #$num: $title"
+          else
+            echo "merge not accepted yet for #$num (other required checks likely still pending) -- the workflow that finishes last will retry this"
+          fi
