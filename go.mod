@@ -2,6 +2,8 @@ module github.com/justinstimatze/robotsyes
 
 go 1.25.0
 
+toolchain go1.26.6
+
 require (
 	github.com/anacrolix/torrent v1.61.0
 	github.com/justinstimatze/chit v0.1.2
