@@ -961,3 +961,26 @@ Verdicts:
   (unit-level, no Bundler) — same function-and-its-own-tests shape as
   C5, not duplication.
 - reviewed: 2026-08-28
+
+## 89 — false-alarm
+- pair: internal/export/export.go::Bundler.pathsFromSitemapIndex | internal/export/sitemap_test.go::TestBundleDiscoversPathsFromSitemapIndex
+- signal: name~0.57(from+index+paths+sitemap); shared-calls=1
+- verdict: false-alarm
+- policy: none
+- note: a function and its own direct test, surfaced fresh by the
+  sitemap-test split — same shape as #13/#75/#79/#83.
+- reviewed: 2026-08-28
+
+## Open, not yet extracted
+- `cardCache.removeElement`/`.len`, `nonceCache.removeElement`/`.len`,
+  `replayCache.removeElement`/`.len` all match `Limiter.removeElement`/
+  `.len` (internal/ratelimit/ratelimit.go) at signal 1.00 — four
+  independent hand-rolled `container/list` bounded-LRU caches now share
+  the same ~15-line remove/len shape. Unlike every other entry in this
+  file, this one is real duplication, not a false alarm — deliberately
+  left unadjudicated (not marked false-alarm) rather than silenced,
+  since this codebase already has precedent for extracting a repeated
+  idiom once it recurs (internal/httpx.GetBounded, pulled after two
+  duplicates). A shared generic LRU-cache package would close this;
+  not done here since fixing the underlying bug each cache guards
+  against was the point of that pass, not a refactor pass.
