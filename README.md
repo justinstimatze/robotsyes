@@ -27,6 +27,24 @@ build fails fast at startup with the fix. To get both, build with tags:
 go install -tags payments,torrent github.com/justinstimatze/robotsyes/cmd/robotsyes@latest
 ```
 
+Or with Docker — same two variants, published on every push to `main`:
+
+```sh
+docker run -p 8080:8080 \
+  -v $(pwd)/robotsyes.yaml:/etc/robotsyes/robotsyes.yaml:ro \
+  ghcr.io/justinstimatze/robotsyes:edge
+
+# payments + torrent:
+docker run -p 8080:8080 \
+  -v $(pwd)/robotsyes.yaml:/etc/robotsyes/robotsyes.yaml:ro \
+  ghcr.io/justinstimatze/robotsyes:edge-full
+```
+
+`:latest`/`:latest-full` track the most recent `vX.Y.Z` tag; `:edge`/`:edge-full`
+track `main`. No config is baked into the image — the container fails fast
+with a clear error if nothing's mounted at `/etc/robotsyes/robotsyes.yaml`,
+rather than silently listening against an unreachable default origin.
+
 ```yaml
 origin: http://localhost:3000
 addr: ":8080"

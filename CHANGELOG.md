@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Docker images**, two variants matching the existing build-tag split:
+  `ghcr.io/justinstimatze/robotsyes:edge` (default, content negotiation +
+  bulk export) and `:edge-full` (payments + torrent). Built and pushed on
+  every push to `main` (`.github/workflows/docker.yml`), plus `:latest`/
+  `:latest-full` on `vX.Y.Z` tags. No config is baked into the image —
+  `origin` has no sane container default, so the entrypoint fails fast
+  with a clear error until one is mounted at
+  `/etc/robotsyes/robotsyes.yaml`.
 - **Pillar 2: opt-in `.torrent` export.** `/.well-known/robots-yes/export.torrent`
   publishes a v1 (BEP 3) multi-file torrent whose pieces are the same bundled
   pages the manifest hashes, BEP-19 web-seeded back to a new
