@@ -1,0 +1,52 @@
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, matching dependabot.yml's cadence — catches new query-pack
+    # findings on unchanged code, not just new commits.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      matrix:
+        include:
+          # Default build: content negotiation + bulk export only.
+          - tags: ""
+            category: go-default
+          # payments/torrent-gated files (chitgate, torrent.go) are
+          # invisible to CodeQL unless built with these tags too — same
+          # reason ci.yml has a test-full job.
+          - tags: "payments,torrent"
+            category: go-full
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # github/codeql-action is pinned to v3 deliberately, not an exact
+      # patch — GitHub ships the CodeQL CLI/query packs in lockstep with
+      # this action's backend and documents @v3 as the supported way to
+      # track that, unlike the other actions in this repo's workflows.
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: go
+
+      - name: Build
+        run: go build -tags "${{ matrix.tags }}" ./...
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.category }}"

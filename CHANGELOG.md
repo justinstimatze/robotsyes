@@ -12,6 +12,8 @@
   `golangci-lint-action` now pins an exact version instead of tracking
   `latest`. `main` also has real branch protection now: 6 required
   status checks across `ci` and `docker`, PRs required, no admin bypass.
+  CodeQL scanning added too, both build-tag configs, once the repo went
+  public made that free instead of requiring a GHAS license.
 - **Docker images**, two variants matching the existing build-tag split:
   `ghcr.io/justinstimatze/robotsyes:edge` (default, content negotiation +
   bulk export) and `:edge-full` (payments + torrent). Built and pushed on
