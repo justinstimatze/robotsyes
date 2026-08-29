@@ -4,13 +4,14 @@
 export, bot identity verification, and graduated rate limits for any
 existing site, with no changes to the origin.**
 
-The web has no negotiated way to serve an agent differently from a
-browser. A site either blocks crawlers outright, `robots.txt` and all, or
-eats the cost of every agent re-scraping full HTML pages to extract the
-same handful of facts a markdown response would have handed over
-directly. robots.yes gives a site a standard, verifiable way to say who's
-asking and return exactly what they need, instead of treating every
-request as a human with a browser.
+The default visitor to a site is no longer just a human with a browser.
+Agents are already reading, comparing, and acting on web content at
+scale, and a site that only knows how to answer browsers either gets
+scraped anyway or gets left out of what an agent decides to trust.
+robots.yes lets a site opt into that traffic on its own terms: negotiate
+content by what's asking, verify who's asking, and hand back exactly
+what they came for — instead of pretending the only visitor that matters
+is a browser.
 
 It sits in front of an HTTP origin and adds four things a crawler or agent
 can use, all published at `/.well-known/robots-yes.json` so a client can
@@ -112,6 +113,38 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped and why.
 | `/.well-known/robots-yes/metrics` | Prometheus text-format metrics |
 | `/.well-known/signature-agent-card` | This server's own Signature Agent Card (Web Bot Auth) |
 | `/llms.txt` | Compatibility bridge pointing at the discovery document |
+
+## Why not just llms.txt?
+
+[llms.txt](https://llmstxt.org) is a real, widely-adopted standard, and
+robots.yes speaks it — `/llms.txt` redirects to the discovery document.
+Platforms like Mintlify also generate its companion,
+[`llms-full.txt`](https://www.mintlify.com/docs/ai/llmstxt): the whole
+documentation site concatenated into one file, each page as its title,
+source URL, and full markdown. Both are good answers to "what's on this
+site and where" — just to a narrower question than the one robots.yes
+answers:
+
+- **Coverage is opt-in per page; negotiation is automatic per request.**
+  llms.txt/llms-full.txt include whatever pages an author (or their doc
+  generator) chose to add. `Accept: text/markdown` works on any proxied
+  URL, no curation step required.
+- **No verified requester identity.** The "authentication" llms.txt
+  implementations have governs which pages get included in a static
+  file at generation time — not who's asking for it right now. There's
+  no signal to grant a higher rate limit or a paid overflow tier to.
+- **No rate limiting.** Nothing in the convention addresses it — a
+  static file has no concept of a requester to limit.
+- **No change detection.** llms-full.txt is a monolith: checking "did
+  anything change since I last crawled" means re-fetching and diffing
+  the whole file. `export-manifest.json` adds a hash per page and one
+  for the whole bundle, so that check is one small request instead of a
+  full re-download.
+
+llms.txt is the right tool for a hand-curated doc index. robots.yes is
+the layer underneath it: per-request negotiation, verified identity, and
+rate limits on every page a site has — not just the ones an author
+remembered to list.
 
 ## Configuration
 
