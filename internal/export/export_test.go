@@ -160,6 +160,20 @@ func equalPaths(got, want []string) bool {
 	return true
 }
 
+// assertBundledPaths bundles b and asserts the result's paths exactly
+// match want (order-sensitive — see equalPaths). Shared by every test
+// that reduces to "build this bundler, bundle it, check what came out."
+func assertBundledPaths(t *testing.T, b *Bundler, want []string) {
+	t.Helper()
+	pages, err := b.Bundle()
+	if err != nil {
+		t.Fatalf("Bundle: %v", err)
+	}
+	if got := bundledPaths(pages); !equalPaths(got, want) {
+		t.Errorf("bundled paths = %v, want %v", got, want)
+	}
+}
+
 // TestBundleFirstBuildIsSharedAcrossConcurrentCallers proves concurrent
 // callers hitting a never-built Bundler join the same synchronous build
 // instead of each starting their own — the origin should see exactly one

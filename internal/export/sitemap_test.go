@@ -65,13 +65,7 @@ func newSitemapTestBundler(t *testing.T, pages map[string]string, locs ...string
 // them being hand-listed in Paths.
 func TestBundleDiscoversPathsFromSitemap(t *testing.T) {
 	b := newSitemapTestBundler(t, map[string]string{"/a": "A", "/b": "B"}, "/a", "/b")
-	pages, err := b.Bundle()
-	if err != nil {
-		t.Fatalf("Bundle: %v", err)
-	}
-	if got, want := bundledPaths(pages), []string{"/a", "/b"}; !equalPaths(got, want) {
-		t.Errorf("bundled paths = %v, want %v", got, want)
-	}
+	assertBundledPaths(t, b, []string{"/a", "/b"})
 }
 
 // TestBundleDiscoversPathsFromSitemapIndex covers the shape real large
@@ -139,13 +133,7 @@ func TestBundleSitemapPathsCappedAtMaxSitemapPages(t *testing.T) {
 // would mean serving content it has no business speaking for.
 func TestBundleSitemapSkipsForeignHostEntries(t *testing.T) {
 	b := newSitemapTestBundler(t, map[string]string{"/a": "A"}, "https://evil.example/other", "/a")
-	pages, err := b.Bundle()
-	if err != nil {
-		t.Fatalf("Bundle: %v", err)
-	}
-	if got, want := bundledPaths(pages), []string{"/a"}; !equalPaths(got, want) {
-		t.Errorf("bundled paths = %v, want %v (foreign-host entry skipped)", got, want)
-	}
+	assertBundledPaths(t, b, []string{"/a"})
 }
 
 // TestDecodeSitemapLocsStopsAtEntryCap is the regression test for
@@ -233,13 +221,7 @@ func TestBundleCombinesExplicitAndSitemapPathsWithoutDuplicating(t *testing.T) {
 // 404ing), so one bad entry skips instead of failing the whole bundle.
 func TestBundleSitemapPathFailureDoesNotAbortBundle(t *testing.T) {
 	b := newSitemapTestBundler(t, map[string]string{"/a": "A"}, "/a", "/missing")
-	pages, err := b.Bundle()
-	if err != nil {
-		t.Fatalf("expected the missing sitemap entry to be skipped, not fail the bundle: %v", err)
-	}
-	if got, want := bundledPaths(pages), []string{"/a"}; !equalPaths(got, want) {
-		t.Errorf("bundled paths = %v, want %v (/missing skipped, 404)", got, want)
-	}
+	assertBundledPaths(t, b, []string{"/a"})
 }
 
 // TestFetchPagesConcurrentlyBoundsInFlightRequests is the regression
