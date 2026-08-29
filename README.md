@@ -18,6 +18,15 @@ cp robotsyes.example.yaml robotsyes.yaml
 # edit robotsyes.yaml: set origin to the real site being proxied
 ```
 
+The default install builds content negotiation and bulk export only — it
+carries no BitTorrent or x402/payments dependency. Adding either
+`export.torrent.enabled` or `payments.enabled` to a config against this
+build fails fast at startup with the fix. To get both, build with tags:
+
+```sh
+go install -tags payments,torrent github.com/justinstimatze/robotsyes/cmd/robotsyes@latest
+```
+
 ```yaml
 origin: http://localhost:3000
 addr: ":8080"
@@ -48,8 +57,8 @@ origin is set, so it's a smoke test, not a deployment.
 - **Bulk export**: done. `export.ndjson` bundles every configured page;
   `export-manifest.json` adds a per-page hash plus one bundle-level hash so
   a repeat crawl can check "did anything change" in one request.
-  `export.torrent` (BEP-19 web seed) is opt-in — see `export.torrent` in
-  `robotsyes.example.yaml`.
+  `export.torrent` (BEP-19 web seed) is opt-in and requires the `torrent`
+  build tag — see `export.torrent` in `robotsyes.example.yaml`.
 - **Identity verification**: done, wire-compatible with IETF Web Bot Auth
   (`draft-meunier-web-bot-auth-architecture`), the scheme Cloudflare,
   Anthropic, and OpenAI already run in production. Verified against the
@@ -58,14 +67,13 @@ origin is set, so it's a smoke test, not a deployment.
   for a request to earn the verified tier.
 - **Graduated rate limits**: done. Ceilings are set per identity tier in
   config and published in the discovery document. The optional x402
-  paid-overflow tier (`payments.enabled`) is scoped to what's actually
-  proven live: EVM "exact" scheme only, one flat price, Base mainnet and
-  USDC by default, no local ledger or bulk-credit purchase. Settlement is
-  delegated to [`justinstimatze/chit`](https://github.com/justinstimatze/chit).
+  paid-overflow tier (`payments.enabled`) requires the `payments` build
+  tag and is scoped to what's actually proven live: EVM "exact" scheme
+  only, one flat price, Base mainnet and USDC by default, no local ledger
+  or bulk-credit purchase. Settlement is delegated to
+  [`justinstimatze/chit`](https://github.com/justinstimatze/chit).
 
-See [CHANGELOG.md](CHANGELOG.md) for what shipped and why, and
-[HANDOFF.md](HANDOFF.md) for the design reasoning and prior art behind each
-pillar.
+See [CHANGELOG.md](CHANGELOG.md) for what shipped and why.
 
 ## Well-known routes
 
@@ -90,13 +98,16 @@ behavior as no config at all.
 ## Testing
 
 ```sh
-go build ./...
-go vet ./...
-go test ./... -race
+make check       # vet, fmt, lint, test — the default build
+make check-full  # same, with -tags payments,torrent
 ```
 
-No live-network test suite — the x402 payment path is exercised with a
-fake `payments.Merchant` in unit tests, not a funded wallet.
+Run both before a release: `check` and `check-full` cover different code
+— `chitgate`'s proxy integration and `torrent.go` only compile under the
+`payments`/`torrent` tags, so the default build's test run never touches
+them. No live-network test suite either way — the x402 payment path is
+exercised with a fake `payments.Merchant` in unit tests, not a funded
+wallet.
 
 ## Security
 

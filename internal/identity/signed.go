@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/justinstimatze/robotsyes/internal/httpx"
+	"github.com/justinstimatze/robotsyes/internal/ratelimit"
 )
 
 // Card is the self-published Signature Agent Card a requester serves at
@@ -236,7 +237,40 @@ type SignedVerifier struct {
 	// sound — this caps that worst case at the same order of magnitude
 	// as MaxSkew. Zero disables the check.
 	MaxValidity time.Duration
+
+	// preVerify is unexported, unlike every field above: it's an internal
+	// safety mechanism, not something a caller assembling a SignedVerifier
+	// by hand should need to configure. Nil (the zero value, e.g. a
+	// SignedVerifier built as a struct literal without going through
+	// NewSignedVerifier) means "no throttle" — Verify checks for nil
+	// before using it, rather than requiring every caller to know this
+	// field exists.
+	preVerify *ratelimit.Limiter
 }
+
+// preVerifyTier is an internal-only bucket name for preVerify — never
+// published, never operator-configurable, and distinct from the real
+// Tier constants so it can't be confused with one.
+const preVerifyTier = "presign"
+
+// maxPreVerifyAttemptsPerMinute bounds, per source IP, how many
+// signature-verification attempts (card fetch + Ed25519 check) Verify
+// will run per minute — checked first, before any of that work runs and
+// before Nonces is ever touched. TierVerified requires no registration
+// (see its own doc comment): anyone can mint a keypair, host a card, and
+// present a fresh nonce on every request. verifySignature only spends a
+// nonce cache slot after a signature checks out, but checking a
+// signature is still cheap enough — one cached-after-the-first-hit card
+// fetch, one local Ed25519 verify — that an unthrottled attacker could
+// otherwise insert distinct nonces fast enough to evict a legitimately
+// seen one from the bounded cache before its real TTL elapses, which
+// would shorten the replay-defense window below what it's configured to
+// be for a nonce an attacker separately captured. This runs ahead of
+// proxy.go's own tier-based rate limiting (which needs the tier this
+// function is computing, so it can't run first) — a generous,
+// non-configurable safety floor under the crypto path specifically, not
+// the real per-tier ceiling published in the discovery document.
+const maxPreVerifyAttemptsPerMinute = 120
 
 // NewSignedVerifier builds a SignedVerifier with a 5-minute replay window
 // and a matching bound on signature validity.
@@ -246,6 +280,9 @@ func NewSignedVerifier(cards *CardFetcher) *SignedVerifier {
 		Nonces:      newNonceCache(DefaultMaxNonceCacheEntries, 5*time.Minute),
 		MaxSkew:     5 * time.Minute,
 		MaxValidity: 5 * time.Minute,
+		preVerify: ratelimit.New(map[string]ratelimit.Limit{
+			preVerifyTier: {RequestsPerMinute: maxPreVerifyAttemptsPerMinute},
+		}, 0),
 	}
 }
 
@@ -253,6 +290,14 @@ func (v *SignedVerifier) Verify(r *http.Request) Identity {
 	agentURL, ok := unquoteSignatureAgent(r.Header.Get(SignatureAgentHeader))
 	if !ok || agentURL == "" {
 		return Identity{Tier: TierUnverified}
+	}
+	if v.preVerify != nil && !v.preVerify.Allow(preVerifyTier, httpx.RemoteIP(r)) {
+		// Too many verification attempts from this source too fast —
+		// degrade to Declared without spending a card fetch or crypto
+		// op on it, same as an invalid signature would. The claim is
+		// still recorded; it just isn't cryptographically checked this
+		// time.
+		return Identity{Tier: TierDeclared, AgentID: agentURL}
 	}
 	if agentID, ok := v.verifySignature(r, agentURL); ok {
 		return Identity{Tier: TierVerified, AgentID: agentID}

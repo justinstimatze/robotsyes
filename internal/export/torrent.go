@@ -1,9 +1,17 @@
+//go:build torrent
+
 // The real .torrent this file builds is the second half of the same
 // Internet Archive-lifted design manifest.go credits: a per-page
 // BitTorrent piece listing, BEP-19 web-seeded straight back to this
 // server so a swarm can form for long-tail content without robots.yes
 // ever running a tracker or peer client — the same role archive.org's own
 // production .torrents play for its own items.
+//
+// This file only compiles into a binary built with `-tags torrent`. The
+// default build gets torrent_stub.go instead, so `go install
+// ./cmd/robotsyes` with no tags never links in anacrolix/torrent at all —
+// content negotiation and bulk export shouldn't require auditing a
+// BitTorrent implementation to adopt.
 package export
 
 import (
@@ -16,11 +24,11 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 )
 
-// torrentInfoName is the multi-file torrent's suggested root directory —
-// also, per BEP 19, the fixed first path segment every web-seed GET a
-// torrent client issues will carry ahead of a file's own path segments.
-// ServeTorrentSeed strips exactly this prefix back off.
-const torrentInfoName = "pages"
+// TorrentSupported reports whether this binary was built with `-tags
+// torrent`. main.go checks this at startup so a config that turns
+// export.torrent on against a binary that can't build one fails fast
+// with the fix, instead of silently 404ing on every request.
+const TorrentSupported = true
 
 // pathToSeedKey converts a bundled page's URL path into the slash-joined
 // key used both as this page's BEP-3 file-path segments and as the

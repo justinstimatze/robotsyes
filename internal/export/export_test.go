@@ -392,6 +392,74 @@ func TestBundleSitemapPathFailureDoesNotAbortBundle(t *testing.T) {
 	}
 }
 
+// TestFetchPagesConcurrentlyBoundsInFlightRequests is the regression
+// test for the scalability finding that a large sitemap fetched strictly
+// serially can take longer to rebuild than the bundle's own TTL:
+// fetchPagesConcurrently must run more than one fetch at a time, but
+// never more than maxConcurrentSitemapFetches at once.
+func TestFetchPagesConcurrentlyBoundsInFlightRequests(t *testing.T) {
+	var inFlight, maxObserved int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&inFlight, 1)
+		for {
+			old := atomic.LoadInt32(&maxObserved)
+			if n <= old || atomic.CompareAndSwapInt32(&maxObserved, old, n) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		atomic.AddInt32(&inFlight, -1)
+		w.Write([]byte("<html><body><main><h1>x</h1></main></body></html>"))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	b := NewBundler(BundlerConfig{Origin: srv.URL, TTL: time.Minute})
+	paths := make([]string, maxConcurrentSitemapFetches*3)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("/p%d", i)
+	}
+	pages := b.fetchPagesConcurrently(paths)
+
+	if len(pages) != len(paths) {
+		t.Fatalf("got %d pages, want %d", len(pages), len(paths))
+	}
+	if maxObserved < 2 {
+		t.Errorf("max observed concurrent requests = %d, want > 1 (fetches should overlap)", maxObserved)
+	}
+	if maxObserved > maxConcurrentSitemapFetches {
+		t.Errorf("max observed concurrent requests = %d, want <= %d", maxObserved, maxConcurrentSitemapFetches)
+	}
+}
+
+// TestFetchPagesConcurrentlyPreservesOrder confirms the result order
+// matches the input path order regardless of which fetch actually
+// completes first — later tests and callers (e.g.
+// TestBundleCombinesExplicitAndSitemapPathsWithoutDuplicating) assert
+// ordered equality against bundled paths, which concurrent completion
+// order alone wouldn't guarantee.
+func TestFetchPagesConcurrentlyPreservesOrder(t *testing.T) {
+	mux := http.NewServeMux()
+	// /p0 deliberately answers slower than /p1 and /p2, so completion
+	// order differs from input order unless results are placed by index.
+	mux.HandleFunc("/p0", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(20 * time.Millisecond)
+		w.Write([]byte("<html><body><main><h1>0</h1></main></body></html>"))
+	})
+	mux.HandleFunc("/p1", pageHandler("1"))
+	mux.HandleFunc("/p2", pageHandler("2"))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	b := NewBundler(BundlerConfig{Origin: srv.URL, TTL: time.Minute})
+	pages := b.fetchPagesConcurrently([]string{"/p0", "/p1", "/p2"})
+
+	if got, want := bundledPaths(pages), []string{"/p0", "/p1", "/p2"}; !equalPaths(got, want) {
+		t.Errorf("bundled paths = %v, want %v (input order, not completion order)", got, want)
+	}
+}
+
 // TestBundleFirstBuildIsSharedAcrossConcurrentCallers proves concurrent
 // callers hitting a never-built Bundler join the same synchronous build
 // instead of each starting their own — the origin should see exactly one
@@ -860,4 +928,29 @@ func waitForManifestEntryHashChange(t *testing.T, b *Bundler, from string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("background rebuild never landed a changed manifest")
+}
+
+// TestServeTorrentDisabledIsNotFound and TestServeTorrentSeedDisabledIsNotFound
+// live here rather than torrent_test.go — that file only compiles under
+// `-tags torrent`, but ServeTorrent/ServeTorrentSeed's disabled-path
+// branch (in export.go) is always compiled, so it needs coverage in the
+// default build too.
+func TestServeTorrentDisabledIsNotFound(t *testing.T) {
+	b := NewBundler(BundlerConfig{Origin: "http://unused.invalid", Paths: []string{"/a"}, TTL: time.Minute})
+	req := httptest.NewRequest(http.MethodGet, "/export.torrent", nil)
+	w := httptest.NewRecorder()
+	b.ServeTorrent(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d when torrent is disabled", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestServeTorrentSeedDisabledIsNotFound(t *testing.T) {
+	b := NewBundler(BundlerConfig{Origin: "http://unused.invalid", Paths: []string{"/a"}, TTL: time.Minute})
+	req := httptest.NewRequest(http.MethodGet, "/torrent-seed/pages/a", nil)
+	w := httptest.NewRecorder()
+	b.ServeTorrentSeed(w, req, "pages/a")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d when torrent is disabled", w.Code, http.StatusNotFound)
+	}
 }

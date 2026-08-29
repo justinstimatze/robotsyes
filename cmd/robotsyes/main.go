@@ -15,9 +15,8 @@ import (
 	"time"
 
 	"github.com/justinstimatze/robotsyes/internal/config"
+	"github.com/justinstimatze/robotsyes/internal/export"
 	"github.com/justinstimatze/robotsyes/internal/identity"
-	"github.com/justinstimatze/robotsyes/internal/paymentgate/chitgate"
-	"github.com/justinstimatze/robotsyes/internal/payments"
 	"github.com/justinstimatze/robotsyes/internal/proxy"
 )
 
@@ -91,6 +90,7 @@ func cmdServe(args []string) {
 	_ = fs.Parse(args)
 
 	cfg := loadConfig(*configPath)
+	failIfTorrentUnsupported(cfg)
 	warnIfTorrentTTLTooShort(cfg)
 
 	cards := identity.NewCardFetcher(5*time.Minute, identity.DefaultMaxCardCacheEntries)
@@ -119,11 +119,11 @@ func loadConfig(path string) config.Config {
 	return cfg
 }
 
-// minTorrentTTLSeconds is the point past which HANDOFF.md's own design
-// section judges a swarm unlikely to have time to form before a rebuild
-// regenerates the bundle's infohash — below it, export.torrent still
-// works as a pure BEP-19 web seed, just with none of a swarm's benefit.
-// Not enforced; an operator may have reasons to accept that tradeoff.
+// minTorrentTTLSeconds is the point past which a swarm is unlikely to
+// have time to form before a rebuild regenerates the bundle's infohash —
+// below it, export.torrent still works as a pure BEP-19 web seed, just
+// with none of a swarm's benefit. Not enforced; an operator may have
+// reasons to accept that tradeoff.
 const minTorrentTTLSeconds = 3600
 
 // warnIfTorrentTTLTooShort logs, but doesn't block startup on, a
@@ -135,33 +135,15 @@ func warnIfTorrentTTLTooShort(cfg config.Config) {
 	}
 }
 
-// buildMerchant returns nil when payments are disabled — proxy.New
-// treats a nil Merchant as "no paid-overflow tier configured". Resolves
-// Network/Asset defaults into cfg here, once, so both the merchant and
-// the discovery document (which reads cfg.Payments back out of the
-// Server) agree on the effective values instead of the discovery doc
-// publishing an empty string when the operator relied on chitgate's
-// built-in default.
-func buildMerchant(cfg *config.Config) payments.Merchant {
-	if !cfg.Payments.Enabled {
-		return nil
+// failIfTorrentUnsupported exits fast when a config asks for
+// export.torrent against a binary that wasn't built with `-tags
+// torrent` (see internal/export/torrent.go and torrent_stub.go) —
+// better than the alternative, where every torrent route would just
+// 404 forever with no indication why.
+func failIfTorrentUnsupported(cfg config.Config) {
+	if cfg.Export.Torrent.Enabled && !export.TorrentSupported {
+		log.Fatalf("robotsyes: export.torrent.enabled is true, but this binary wasn't built with torrent support; rebuild with `go build -tags torrent`")
 	}
-	if cfg.Payments.Network == "" {
-		cfg.Payments.Network = chitgate.DefaultNetwork
-	}
-	if cfg.Payments.Asset == "" {
-		cfg.Payments.Asset = chitgate.DefaultAsset
-	}
-	m, err := chitgate.New(chitgate.Config{
-		PayoutAddress:        cfg.Payments.PayoutAddress,
-		PriceCentsPerRequest: cfg.Payments.PriceCentsPerRequest,
-		Network:              cfg.Payments.Network,
-		Asset:                cfg.Payments.Asset,
-	})
-	if err != nil {
-		log.Fatalf("robotsyes: %v", err)
-	}
-	return m
 }
 
 // serve starts the HTTP server and blocks until it exits.

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/justinstimatze/robotsyes/internal/config"
 	"github.com/justinstimatze/robotsyes/internal/export"
+	"github.com/justinstimatze/robotsyes/internal/httpx"
 	"github.com/justinstimatze/robotsyes/internal/identity"
 	"github.com/justinstimatze/robotsyes/internal/negotiate"
 	"github.com/justinstimatze/robotsyes/internal/payments"
@@ -194,15 +194,7 @@ func clientKey(r *http.Request, id identity.Identity) string {
 	if id.Tier == identity.TierVerified {
 		return id.AgentID
 	}
-	// r.RemoteAddr is "ip:port", and the port is the client's ephemeral
-	// source port — different on every TCP connection, even from the
-	// same client. Keying on the whole thing gives a fresh bucket to
-	// every new connection, which defeats the limiter entirely.
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return httpx.RemoteIP(r)
 }
 
 // handleRateLimited responds to a request the rate limiter denied. With
@@ -442,10 +434,9 @@ func (s *Server) identityCapabilities() discoveryIdentity {
 }
 
 // serveLLMsTxt is the bridge from the llms.txt convention agents already
-// check by habit — HANDOFF.md's own framing is that llms.txt is a "maybe"
-// that still points back at the same crawl, so this exists purely to get
-// an agent from the path it already knows to check to the actual "yes"
-// file, not to duplicate what the discovery document says.
+// check by habit — this exists purely to get an agent from the path it
+// already knows to check to the actual discovery document, not to
+// duplicate what that document says.
 func (s *Server) serveLLMsTxt(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprintf(w, "# %s\n\n", s.cfg.Origin)

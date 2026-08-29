@@ -31,6 +31,15 @@ type Page struct {
 	Markdown string `json:"markdown"`
 }
 
+// torrentInfoName is the multi-file torrent's suggested root directory —
+// also, per BEP 19, the fixed first path segment every web-seed GET a
+// torrent client issues will carry ahead of a file's own path segments.
+// ServeTorrentSeed strips exactly this prefix back off. Lives here
+// rather than in torrent.go since it's needed regardless of whether
+// this binary was built with `-tags torrent` — the route still exists
+// (and still 404s) in the default build.
+const torrentInfoName = "pages"
+
 // BundlerConfig configures a Bundler.
 type BundlerConfig struct {
 	// Origin is the upstream server every bundled path is fetched from.
@@ -44,8 +53,8 @@ type BundlerConfig struct {
 	TTL time.Duration
 	// SitemapURL, if set, is fetched on every rebuild to discover
 	// additional paths beyond Paths — see discoverSitemapPaths. This is
-	// what lets bulk export cover the long tail (HANDOFF.md's
-	// cache-economics argument) without hand-enumerating every path.
+	// what lets bulk export cover the long tail without hand-enumerating
+	// every path.
 	SitemapURL string
 	// MaxSitemapPages caps how many paths SitemapURL can contribute to
 	// one bundle. Zero means DefaultMaxSitemapPages.
@@ -347,18 +356,63 @@ func (b *Bundler) bundleSitemapPages(seen []string) []Page {
 		return nil
 	}
 
-	pages := make([]Page, 0, len(discovered))
+	toFetch := make([]string, 0, len(discovered))
 	for _, p := range discovered {
 		if already[p] {
 			continue
 		}
 		already[p] = true
-		md, err := b.fetchAndStrip(p)
-		if err != nil {
-			log.Printf("robotsyes: skipping sitemap path %s: %v", p, err)
-			continue
+		toFetch = append(toFetch, p)
+	}
+	return b.fetchPagesConcurrently(toFetch)
+}
+
+// maxConcurrentSitemapFetches bounds how many origin fetches
+// fetchPagesConcurrently runs at once. Fetching strictly one at a time
+// means a rebuild's wall time is roughly len(paths) x origin latency —
+// at MaxSitemapPages' default of 1000 and a realistic 100-300ms/page,
+// that's 100-300s, which can exceed the bundle's own TTL. A bound (not
+// unlimited fan-out) keeps this from turning into a self-inflicted
+// thundering herd against the operator's own origin.
+const maxConcurrentSitemapFetches = 10
+
+// fetchPagesConcurrently fetches paths with up to
+// maxConcurrentSitemapFetches requests in flight, preserving the
+// caller's ordering in the result and the same skip-and-log-on-failure
+// behavior a sequential loop would have — one bad path is dropped, not
+// escalated to abort the rest. Each path's result is written to its own
+// index in a preallocated slice rather than appended from multiple
+// goroutines, so no synchronization is needed beyond the semaphore
+// itself.
+func (b *Bundler) fetchPagesConcurrently(paths []string) []Page {
+	type result struct {
+		page Page
+		ok   bool
+	}
+	results := make([]result, len(paths))
+	sem := make(chan struct{}, maxConcurrentSitemapFetches)
+	var wg sync.WaitGroup
+	for i, p := range paths {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, p string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			md, err := b.fetchAndStrip(p)
+			if err != nil {
+				log.Printf("robotsyes: skipping sitemap path %s: %v", p, err)
+				return
+			}
+			results[i] = result{page: Page{Path: p, Markdown: md}, ok: true}
+		}(i, p)
+	}
+	wg.Wait()
+
+	pages := make([]Page, 0, len(paths))
+	for _, r := range results {
+		if r.ok {
+			pages = append(pages, r.page)
 		}
-		pages = append(pages, Page{Path: p, Markdown: md})
 	}
 	return pages
 }
@@ -582,9 +636,8 @@ func (b *Bundler) PageCount() int {
 // per line — so a consumer can stream it without holding the whole thing
 // in memory, and a partial download still yields whole records. Gzips the
 // response when the requester's Accept-Encoding allows it: the whole
-// point of bulk export is a bandwidth argument (HANDOFF.md's Wikimedia
-// citation), and ndjson full of repeated JSON keys and HTML-derived
-// markdown compresses well.
+// point of bulk export is a bandwidth argument, and ndjson full of
+// repeated JSON keys and HTML-derived markdown compresses well.
 func (b *Bundler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	pages, err := b.Bundle()
 	if err != nil {

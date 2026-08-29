@@ -34,6 +34,24 @@ jobs:
       - name: Build
         run: go build -v ./cmd/robotsyes
 
+  # The default build excludes payments and torrent (see cmd/robotsyes's
+  # payments_stub.go / internal/export's torrent_stub.go) so a plain
+  # `go install` never links in chit or anacrolix/torrent. This job is
+  # what actually exercises the code those build tags gate — without it,
+  # chitgate's proxy integration and torrent.go would have zero CI
+  # coverage.
+  test-full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Test (payments, torrent)
+        run: go test -race -tags payments,torrent ./...
+      - name: Build (payments, torrent)
+        run: go build -v -tags payments,torrent ./cmd/robotsyes
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -41,6 +59,12 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v9
+      - name: Lint (default)
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
+      - name: Lint (payments, torrent)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --build-tags=payments,torrent

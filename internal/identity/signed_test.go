@@ -160,6 +160,38 @@ func TestSignedVerifierValidSignature(t *testing.T) {
 	}
 }
 
+// TestSignedVerifierThrottlesRepeatedVerificationAttempts is the
+// regression test for the flood-eviction finding: TierVerified requires
+// no registration, so a single source presenting the same signed
+// identity with a fresh nonce on every request could otherwise insert
+// distinct nonces fast enough to evict a legitimately seen one from the
+// bounded cache before its real TTL. preVerify must cap attempts per
+// source: once the cap trips, Verify degrades to Declared even for an
+// otherwise cryptographically valid signature, instead of continuing to
+// spend a nonce-cache slot on every request forever.
+func TestSignedVerifierThrottlesRepeatedVerificationAttempts(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestCardServer(t, "https://bot.example/", "key-1", pub)
+	v := NewSignedVerifier(newTestCardFetcher(srv.Client(), time.Minute))
+
+	var sawThrottled bool
+	for i := 0; i < maxPreVerifyAttemptsPerMinute+5; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/some/path", nil)
+		signRequest(req, signParams{priv, srv.URL + "/card.json", "key-1", time.Now().Unix(), 0, ""})
+		if v.Verify(req).Tier == TierDeclared {
+			sawThrottled = true
+			break
+		}
+	}
+	if !sawThrottled {
+		t.Errorf("expected at least one Verify call to degrade to %v within %d attempts (the pre-verify cap), got %v every time",
+			TierDeclared, maxPreVerifyAttemptsPerMinute+5, TierVerified)
+	}
+}
+
 // TestSignedVerifierScopeCoversAnyPathOnSameHost documents the deliberate
 // trade this package makes for wire compatibility: a signature covers
 // @authority (and, if present, signature-agent) but not @method or @path

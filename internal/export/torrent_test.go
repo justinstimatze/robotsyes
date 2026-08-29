@@ -1,3 +1,5 @@
+//go:build torrent
+
 package export
 
 import (
@@ -199,26 +201,6 @@ func TestBuildTorrentInfoWrapsTrackersAsOneTier(t *testing.T) {
 	}
 	if mi.AnnounceList[0][0] != trackers[0] {
 		t.Errorf("AnnounceList[0][0] = %q, want %q", mi.AnnounceList[0][0], trackers[0])
-	}
-}
-
-func TestServeTorrentDisabledIsNotFound(t *testing.T) {
-	b := NewBundler(BundlerConfig{Origin: "http://unused.invalid", Paths: []string{"/a"}, TTL: time.Minute})
-	req := httptest.NewRequest(http.MethodGet, "/export.torrent", nil)
-	w := httptest.NewRecorder()
-	b.ServeTorrent(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d when torrent is disabled", w.Code, http.StatusNotFound)
-	}
-}
-
-func TestServeTorrentSeedDisabledIsNotFound(t *testing.T) {
-	b := NewBundler(BundlerConfig{Origin: "http://unused.invalid", Paths: []string{"/a"}, TTL: time.Minute})
-	req := httptest.NewRequest(http.MethodGet, "/torrent-seed/pages/a", nil)
-	w := httptest.NewRecorder()
-	b.ServeTorrentSeed(w, req, "pages/a")
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d when torrent is disabled", w.Code, http.StatusNotFound)
 	}
 }
 
