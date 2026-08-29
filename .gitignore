@@ -1,0 +1,26 @@
+# compiled binary
+/robotsyes
+
+# local instance config — copy from robotsyes.example.yaml; may name a
+# real origin, never commit
+/robotsyes.yaml
+
+# scratch
+*.log
+
+# calque's own calibration telemetry (fire log for every NEW suspect it
+# reports) — not durable memory, unlike .calque/registry.md, which stays
+# tracked
+/.calque/fires.jsonl
+
+# plancheck's own debug artifact from the last check_plan run — not
+# durable memory, same reasoning as calque's fires.jsonl above
+/.plancheck-debug.json
+
+# editor / OS cruft
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
