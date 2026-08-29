@@ -4,6 +4,14 @@
 export, bot identity verification, and graduated rate limits for any
 existing site, with no changes to the origin.**
 
+The web has no negotiated way to serve an agent differently from a
+browser. A site either blocks crawlers outright, `robots.txt` and all, or
+eats the cost of every agent re-scraping full HTML pages to extract the
+same handful of facts a markdown response would have handed over
+directly. robots.yes gives a site a standard, verifiable way to say who's
+asking and return exactly what they need, instead of treating every
+request as a human with a browser.
+
 It sits in front of an HTTP origin and adds four things a crawler or agent
 can use, all published at `/.well-known/robots-yes.json` so a client can
 discover what a given deployment actually supports instead of assuming a
