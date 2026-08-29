@@ -269,14 +269,20 @@ func (s *Server) writeRateLimited(w http.ResponseWriter, tier string) {
 	})
 }
 
+// serveMarkdown forwards the request to s.cfg.Origin, a fixed operator
+// config value — RequestURI() contributes only the path and query, never
+// a host, so a client can't redirect this request to an arbitrary host
+// no matter what it sends. gosec's generic SSRF heuristic can't see that
+// distinction, hence the annotations below.
 func (s *Server) serveMarkdown(w http.ResponseWriter, r *http.Request) {
 	fullURL := s.cfg.Origin + r.URL.RequestURI()
-	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, fullURL, nil)
+	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, fullURL, nil) //nolint:gosec // see func doc
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	resp, err := s.client.Do(upReq)
+	resp, err := s.client.Do(upReq) //nolint:gosec // see func doc
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

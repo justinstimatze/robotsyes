@@ -133,7 +133,7 @@ func Default() Config {
 // omits from Default().
 func Load(path string) (Config, error) {
 	cfg := Default()
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is the operator's own -config flag, not request-derived
 	if err != nil {
 		return Config{}, fmt.Errorf("reading %s: %w", path, err)
 	}

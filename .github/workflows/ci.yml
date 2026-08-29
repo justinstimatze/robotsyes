@@ -62,9 +62,28 @@ jobs:
       - name: Lint (default)
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.13.2
       - name: Lint (payments, torrent)
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.13.2
           args: --build-tags=payments,torrent
+
+  # govulncheck checks reachable calls into known-vulnerable symbols, not
+  # just "is a dependency old" — the gap that let the toolchain drift six
+  # patches behind (20 stdlib CVEs) with nothing catching it. Two runs
+  # for the same reason test/test-full is split: chit and
+  # anacrolix/torrent are only in the dependency graph under
+  # payments,torrent, so the default run can't see vulnerabilities
+  # reachable only through them.
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: govulncheck (default)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+      - name: govulncheck (payments, torrent)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 -tags payments,torrent ./...

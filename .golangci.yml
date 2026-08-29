@@ -7,6 +7,7 @@ linters:
   default: none
   enable:
     - errcheck
+    - gosec
     - govet
     - ineffassign
     - staticcheck
@@ -26,6 +27,10 @@ linters:
         - "-ST*"
   exclusions:
     rules:
+      # Ignoring a write/close error from a test's own fake HTTP handler
+      # is normal — a real failure there fails the test via its
+      # assertions, not via the ignored return value.
       - path: _test\.go
         linters:
           - errcheck
+          - gosec

@@ -22,7 +22,11 @@ FROM alpine:3.24
 
 # ca-certificates: robotsyes makes outbound HTTPS calls (identity card
 # fetches, x402 settlement in the full image) that need a trust store.
-RUN apk add --no-cache ca-certificates && \
+# apk upgrade pulls in any package fix alpine has published since the
+# base image was built — the binary itself is CGO_ENABLED=0 and doesn't
+# link against these packages, but a scanner (see .github/workflows/
+# docker.yml) can't tell that from "vulnerable library present."
+RUN apk update && apk upgrade --no-cache && apk add --no-cache ca-certificates && \
     addgroup -S robotsyes && adduser -S robotsyes -G robotsyes
 
 COPY --from=builder /out/robotsyes /usr/local/bin/robotsyes
