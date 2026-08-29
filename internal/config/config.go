@@ -12,6 +12,22 @@ import (
 	"github.com/justinstimatze/robotsyes/internal/identity"
 )
 
+// requiredRateLimitTiers are every tier ratelimit.Allow is ever called
+// with (see internal/proxy). ratelimit.Limiter's own doc comment already
+// warns that a tier with no entry gets zero capacity — Load enforces
+// that explicitly rather than relying on yaml.v3's map-merge behavior to
+// keep Default()'s entries in place when a config only overrides one
+// tier. That merge behavior is real today, but it's unstated library
+// behavior, not a contract — a config that clears the map entirely (or a
+// yaml.v3 change) would silently lock out every tier but the ones
+// listed, and the failure mode is total: a denied request gets a flat
+// 429, not a fallback.
+var requiredRateLimitTiers = []identity.Tier{
+	identity.TierUnverified,
+	identity.TierDeclared,
+	identity.TierVerified,
+}
+
 // Config is the whole robotsyes.yaml document.
 type Config struct {
 	// Origin is the upstream server every request proxies to.
@@ -129,6 +145,11 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Export.Torrent.Enabled && cfg.Export.Torrent.PublicURL == "" {
 		return Config{}, fmt.Errorf("%s: export.torrent.public_url is required when export.torrent.enabled", path)
+	}
+	for _, tier := range requiredRateLimitTiers {
+		if _, ok := cfg.RateLimits[string(tier)]; !ok {
+			return Config{}, fmt.Errorf("%s: rate_limits.%s is required (every tier needs an explicit ceiling, even 0 — an absent tier is denied every request)", path, tier)
+		}
 	}
 	return cfg, nil
 }

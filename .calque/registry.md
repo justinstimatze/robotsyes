@@ -915,6 +915,40 @@ Verdicts:
 - note: sibling handlers on the same Bundler — same shape as #80/#82.
 - reviewed: 2026-08-28
 
+## 86 — contracted-twin-ok
+- pair: cmd/robotsyes/payments_full.go::buildMerchant | cmd/robotsyes/payments_stub.go::buildMerchant
+- signal: name~1.00(merchant); shared-calls=1
+- verdict: contracted-twin-ok
+- policy: none
+- note: deliberate mutually-exclusive build-tag variants (payments /
+  !payments) of the same func signature, same name, on purpose — see
+  the build-tag split's own package docs in each file. They can never
+  both be compiled into one binary, so there's no live-drift risk the
+  usual "extract the shared bit" fix would guard against; if the stub's
+  signature drifts from the full version's, the mismatch is a compile
+  error the moment both are built with the same tag set, not silent
+  runtime skew. Same shape applies to internal/export/torrent.go's
+  buildTorrentInfo vs torrent_stub.go's — not filed separately since
+  calque didn't surface that pair this pass, but the same verdict
+  would apply if it does.
+- reviewed: 2026-08-28
+
+## 87 — false-alarm
+- pair: cmd/robotsyes/main.go::loadConfig | cmd/robotsyes/payments_full.go::buildMerchant
+- signal: shared-strings=1; shared-calls=1
+- verdict: false-alarm
+- policy: none
+- note: coincidental weak overlap (0.35), same shape as #10/#11/#78/#81/#84.
+- reviewed: 2026-08-28
+
+## 88 — false-alarm
+- pair: cmd/robotsyes/main.go::serve | cmd/robotsyes/payments_full.go::buildMerchant
+- signal: shared-strings=1; shared-calls=1
+- verdict: false-alarm
+- policy: none
+- note: coincidental weak overlap (0.18), same shape as #87.
+- reviewed: 2026-08-28
+
 ## C6 — false-alarm
 - cluster: internal/export/export.go::Bundler.buildTorrentLocked | internal/export/torrent_test.go::TestBuildTorrentInfoInfohashChangesWithContent | internal/export/torrent_test.go::TestBuildTorrentInfoInfohashStableAcrossCalls | internal/export/torrent_test.go::TestBuildTorrentInfoSkipsSeedKeyCollision | internal/export/torrent_test.go::TestBuildTorrentInfoWrapsTrackersAsOneTier | internal/export/torrent_test.go::parseTestTorrent
 - signal: shared seam(s): infohashOf, buildTorrentInfo
