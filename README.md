@@ -141,6 +141,27 @@ answers:
   for the whole bundle, so that check is one small request instead of a
   full re-download.
 
+This is also a well-worn pattern outside any single site, and it usually
+comes in two parts: a message written directly at crawlers explaining why
+the live pages are gated, and a menu of alternatives underneath it — a
+full mirror for anyone, bulk archives or torrents for scale, a
+machine-readable index to fetch them programmatically, and a faster or
+more complete path for a requester willing to identify itself or pay for
+the difference.
+[Wikipedia's full-dump mirrors](https://dumps.wikimedia.org/),
+[Internet Archive's per-item torrents](https://archive.org/), and
+[arXiv's bulk S3 access](https://info.arxiv.org/help/bulk_data/index.html)
+are the citable, free-tier version of it; sites that write that message
+specifically for LLM crawlers tend to build the rest of the escalation by
+hand too.
+
+Not every site needs all of it, so robots.yes keeps each piece optional
+rather than assuming one: the discovery document is the crawler-facing
+message, `export`/`export-manifest` is the free bulk tier, `export.torrent`
+adds the scale tier for a site that wants it, and verified identity plus
+the paid overflow tier is there for a site that would rather sell past its
+rate ceiling than just block at it.
+
 llms.txt is the right tool for a hand-curated doc index. robots.yes is
 the layer underneath it: per-request negotiation, verified identity, and
 rate limits on every page a site has — not just the ones an author
