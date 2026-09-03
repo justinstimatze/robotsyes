@@ -141,12 +141,18 @@ answers:
   for the whole bundle, so that check is one small request instead of a
   full re-download.
 
-This is also a well-worn pattern outside any single site: Wikipedia's
-full-dump mirrors, Internet Archive's per-item torrents, and arXiv's bulk
-S3 access all exist for the same underlying reason — scraping the live
-site doesn't scale to crawler volume, so the operator builds a side
-channel by hand. robots.yes turns that side channel into a standard
-capability instead of a one-off.
+This is also a well-worn pattern outside any single site, and it tends to
+show up in tiers rather than one flat "scrape or don't": a free bulk
+channel open to anyone —
+[Wikipedia's full-dump mirrors](https://dumps.wikimedia.org/),
+[Internet Archive's per-item torrents](https://archive.org/), or
+[arXiv's bulk S3 access](https://info.arxiv.org/help/bulk_data/index.html)
+— and then something faster or more targeted for a requester willing to
+identify itself or pay for the difference. That's the shape robots.yes
+standardizes across all four pillars at once — bulk export, torrent web
+seed, verified identity, and rate limits with a paid overflow tier —
+instead of every operator hand-building their own version of the same
+tiering.
 
 llms.txt is the right tool for a hand-curated doc index. robots.yes is
 the layer underneath it: per-request negotiation, verified identity, and
