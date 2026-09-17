@@ -1,13 +1,13 @@
 module github.com/justinstimatze/robotsyes
 
-go 1.25.0
+go 1.26.0
 
 toolchain go1.26.6
 
 require (
 	github.com/anacrolix/torrent v1.61.0
 	github.com/justinstimatze/chit v0.1.2
-	golang.org/x/net v0.58.0
+	golang.org/x/net v0.59.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -27,10 +27,10 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	lukechampine.com/blake3 v1.1.6 // indirect
